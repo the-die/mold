@@ -13,7 +13,12 @@ namespace mold {
 std::string errno_string() {
   // strerror is not thread-safe, so guard it with a lock.
   static std::mutex mu;
+  // std::scoped_lock
+  //   https://en.cppreference.com/w/cpp/thread/scoped_lock
   std::scoped_lock lock(mu);
+  // strerror
+  //   https://man7.org/linux/man-pages/man3/strerror.3.html
+  //   https://man7.org/linux/man-pages/man3/strerror.3p.html
   return strerror(errno);
 }
 
@@ -35,6 +40,15 @@ void cleanup() {
 // disk might be full.
 static std::string sigabrt_msg;
 
+// When the SA_SIGINFO flag is specified in act.sa_flags, the signal
+// handler address is passed via the act.sa_sigaction field.  This
+// handler takes three arguments, as follows:
+//
+//     void
+//     handler(int sig, siginfo_t *info, void *ucontext)
+//     {
+//         ...
+//     }
 static void sighandler(int signo, siginfo_t *info, void *ucontext) {
   static std::mutex mu;
   std::scoped_lock lock{mu};
@@ -61,13 +75,31 @@ static void sighandler(int signo, siginfo_t *info, void *ucontext) {
   signal(SIGABRT, SIG_DFL);
 
   cleanup();
+  // raise
+  //   https://man7.org/linux/man-pages/man3/raise.3.html
+  //   https://man7.org/linux/man-pages/man3/raise.3p.html
   raise(signo);
 }
 
+// Specifying Signal Actions
+//   https://www.gnu.org/software/libc/manual/html_node/Basic-Signal-Handling.html
+//   https://www.gnu.org/software/libc/manual/html_node/Advanced-Signal-Handling.html
+//
+// sigaction
+//   https://man7.org/linux/man-pages/man2/sigaction.2.html
 void install_signal_handler() {
   struct sigaction action;
+  // If SA_SIGINFO is specified in sa_flags, then sa_sigaction
+  // (instead of sa_handler) specifies the signal-handling function
+  // for signum.  This function receives three arguments, as described
+  // below.
   action.sa_sigaction = sighandler;
   sigemptyset(&action.sa_mask);
+  // SA_SIGINFO (since Linux 2.2)
+  //     The signal handler takes three arguments, not one.  In
+  //     this case, sa_sigaction should be set instead of
+  //     sa_handler.  This flag is meaningful only when
+  //     establishing a signal handler.
   action.sa_flags = SA_SIGINFO;
 
   sigaction(SIGSEGV, &action, NULL);

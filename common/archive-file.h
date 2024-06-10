@@ -30,28 +30,37 @@
 
 namespace mold {
 
+// https://en.wikipedia.org/wiki/Ar_(Unix)
+// https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=include/aout/ar.h
+// https://docs.oracle.com/cd/E88353_01/html/E37842/ar.h-3head.html
 struct ArHdr {
-  char ar_name[16];
-  char ar_date[12];
-  char ar_uid[6];
-  char ar_gid[6];
-  char ar_mode[8];
-  char ar_size[10];
-  char ar_fmag[2];
+  char ar_name[16]; // Name of this member.
+  char ar_date[12]; // File mtime.
+  char ar_uid[6];   // Owner uid; printed as decimal.
+  char ar_gid[6];   // Owner gid; printed as decimal.
+  char ar_mode[8];  // File mode, printed as octal.
+  char ar_size[10]; // File size, printed as decimal.
+  char ar_fmag[2];  // Should contain ARFMAG.
 
   bool starts_with(std::string_view s) const {
     return std::string_view(ar_name, s.size()) == s;
   }
 
+  // The ar_name entry of the string table's member header holds a zero length name ar_name[0]=='/',
+  // followed by one trailing slash (ar_name[1]=='/'), followed by blanks (ar_name[2]==' ', etc.).
   bool is_strtab() const {
     return starts_with("// ");
   }
 
+  // A 32-bit archive symbol table has a zero length name, so ar_name contains the string “/” padded
+  // with 15 blank characters on the right. A 64-bit archive symbol table sets ar_name to the string
+  // “/SYM64/”, padded with 9 blank characters to the right.
   bool is_symtab() const {
     return starts_with("/ ") || starts_with("/SYM64/ ");
   }
 
   std::string read_name(std::string_view strtab, u8 *&ptr) const {
+    // https://man.freebsd.org/cgi/man.cgi?query=ar&sektion=5
     // BSD-style long filename
     if (starts_with("#1/")) {
       int namelen = atoi(ar_name + 3);
@@ -69,6 +78,9 @@ struct ArHdr {
       return {start, (const char *)strstr(start, "/\n")};
     }
 
+    // memchr
+    //    https://man7.org/linux/man-pages/man3/memchr.3.html
+    //
     // Short fileanme
     if (const char *end = (char *)memchr(ar_name, '/', sizeof(ar_name)))
       return {ar_name, end};
@@ -80,7 +92,7 @@ template <typename Context, typename MappedFile>
 std::vector<MappedFile *>
 read_thin_archive_members(Context &ctx, MappedFile *mf) {
   u8 *begin = mf->data;
-  u8 *data = begin + 8;
+  u8 *data = begin + 8; // !<thin>\n
   std::vector<MappedFile *> vec;
   std::string_view strtab;
 
@@ -127,11 +139,13 @@ read_thin_archive_members(Context &ctx, MappedFile *mf) {
 template <typename Context, typename MappedFile>
 std::vector<MappedFile *> read_fat_archive_members(Context &ctx, MappedFile *mf) {
   u8 *begin = mf->data;
-  u8 *data = begin + 8;
+  u8 *data = begin + 8; // !<arch>\n
   std::vector<MappedFile *> vec;
   std::string_view strtab;
 
   while (begin + mf->size - data >= 2) {
+    // Each data section is 2 byte aligned. If it would end on an odd offset, a newline ('\n', 0x0A)
+    // is used as filler.
     if ((begin - data) % 2)
       data++;
 
@@ -162,6 +176,7 @@ std::vector<MappedFile *> read_fat_archive_members(Context &ctx, MappedFile *mf)
   return vec;
 }
 
+// read the contents of an archive file
 template <typename Context, typename MappedFile>
 std::vector<MappedFile *> read_archive_members(Context &ctx, MappedFile *mf) {
   switch (get_file_type(ctx, mf)) {

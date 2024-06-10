@@ -217,9 +217,21 @@ Options:
 mold: supported targets: elf32-i386 elf64-x86-64 elf32-littlearm elf64-littleaarch64 elf32-littleriscv elf32-bigriscv elf64-littleriscv elf64-bigriscv elf32-powerpc elf64-powerpc elf64-powerpc elf64-powerpcle elf64-s390 elf64-sparc elf32-m68k elf32-sh-linux elf64-alpha elf64-loongarch elf32-loongarch
 mold: supported emulations: elf_i386 elf_x86_64 armelf_linux_eabi aarch64linux aarch64elf elf32lriscv elf32briscv elf64lriscv elf64briscv elf32ppc elf32ppclinux elf64ppc elf64lppc elf64_s390 elf64_sparc m68kelf shlelf_linux elf64alpha elf64loongarch elf32loongarch)";
 
+// @file
+//   Read command-line options from file. The options read are inserted in place of the original
+//   @file option. If file does not exist, or cannot be read, then the option will be treated
+//   literally, and not removed.
+//
+//   Options in file are separated by whitespace. A whitespace character may be included in an
+//   option by surrounding the entire option in either single or double quotes. Any character
+//   (including a backslash) may be included by prefixing the character to be included with a
+//   backslash. The file may itself contain additional @file options; any such options will be
+//   processed recursively.
 template <typename E>
 static std::vector<std::string_view>
 read_response_file(Context<E> &ctx, std::string_view path, i64 depth) {
+  // The file may itself contain additional @file options; any such options will be processed
+  // recursively.
   if (depth > 10)
     Fatal(ctx) << path << ": response file nesting too deep";
 
@@ -230,6 +242,7 @@ read_response_file(Context<E> &ctx, std::string_view path, i64 depth) {
   mf->is_dependency = false;
 
   while (!data.empty()) {
+    // skip space
     if (isspace(data[0])) {
       data = data.substr(1);
       continue;
@@ -274,6 +287,11 @@ read_response_file(Context<E> &ctx, std::string_view path, i64 depth) {
       return save_string(ctx, buf);
     };
 
+    // Options in file are separated by whitespace. A whitespace character may be included in an
+    // option by surrounding the entire option in either single or double quotes. Any character
+    // (including a backslash) may be included by prefixing the character to be included with a
+    // backslash. The file may itself contain additional @file options; any such options will be
+    // processed recursively.
     std::string_view tok;
     if (data[0] == '\'' || data[0] == '\"')
       tok = read_quoted();
@@ -288,6 +306,12 @@ read_response_file(Context<E> &ctx, std::string_view path, i64 depth) {
   return vec;
 }
 
+// @file
+//   Read command-line options from file. The options read are inserted in place of the original
+//   @file option. If file does not exist, or cannot be read, then the option will be treated
+//   literally, and not removed.
+//   https://sourceware.org/binutils/docs/ld.html
+//
 // Replace "@path/to/some/text/file" with its file contents.
 template <typename E>
 std::vector<std::string_view>
@@ -309,6 +333,7 @@ static i64 get_default_thread_count() {
   return std::min(n, 32);
 }
 
+// Remove leading and trailing spaces from a string.
 static inline std::string_view string_trim(std::string_view str) {
   size_t pos = str.find_first_not_of(" \t");
   if (pos == str.npos)
@@ -326,6 +351,14 @@ static std::vector<std::string> add_dashes(std::string name) {
   if (name.size() == 1)
     return {"-" + name};
 
+  // https://sourceware.org/binutils/docs/ld.html#Options
+  //   For options whose names are multiple letters, either one dash or two can precede the option
+  //   name; for example, ‘-trace-symbol’ and ‘--trace-symbol’ are equivalent. Note—there is one
+  //   exception to this rule. Multiple letter options that start with a lower case ’o’ can only be
+  //   preceded by two dashes. This is to reduce confusion with the ‘-o’ option. So for example
+  //   ‘-omagic’ sets the output file name to ‘magic’ whereas ‘--omagic’ sets the NMAGIC flag on the
+  //   output.
+  //
   // Multi-letter linker options can be preceded by either a single
   // dash or double dashes except ones starting with "o", which must
   // be preceded by double dashes. For example, "-omagic" is
@@ -395,6 +428,7 @@ split_by_comma_or_colon(std::string_view str) {
   std::vector<std::string_view> vec;
 
   for (;;) {
+    // https://en.cppreference.com/w/cpp/string/basic_string/find_first_of
     i64 pos = str.find_first_of(",:");
     if (pos == str.npos) {
       vec.push_back(str);
@@ -437,11 +471,13 @@ static bool is_file(std::string_view path) {
          (st.st_mode & S_IFMT) != S_IFDIR;
 }
 
+// Example: TEXT DATA .bss foo=0xabcdef 10000 !bar
 template <typename E>
 static std::vector<SectionOrder>
 parse_section_order(Context<E> &ctx, std::string_view arg) {
   auto flags = std::regex_constants::ECMAScript | std::regex_constants::icase |
                std::regex_constants::optimize;
+  // https://en.cppreference.com/w/cpp/regex/basic_regex
   static std::regex re1(R"(^\s*(TEXT|DATA|RODATA|BSS)(?:\s|$))", flags);
   static std::regex re2(R"(^\s*([a-zA-Z0-9_.][^\s]*|EHDR|PHDR)(?:\s|$))", flags);
   static std::regex re3(R"(^\s*=(0x[0-9a-f]+|\d+)(?:\s|$))", flags);
@@ -497,6 +533,7 @@ parse_section_order(Context<E> &ctx, std::string_view arg) {
 template <typename E>
 static std::variant<Symbol<E> *, u64>
 parse_defsym_value(Context<E> &ctx, std::string_view s) {
+  // 0x[a-fA-F0-9]+
   if (s.starts_with("0x") || s.starts_with("0X")) {
     size_t nread;
     u64 addr = std::stoull(std::string(s), &nread, 16);
@@ -505,6 +542,7 @@ parse_defsym_value(Context<E> &ctx, std::string_view s) {
     return addr;
   }
 
+  // [0-9]+
   if (s.find_first_not_of("0123456789") == s.npos)
     return (u64)std::stoull(std::string(s), nullptr, 10);
   return get_symbol(ctx, s);
@@ -512,12 +550,23 @@ parse_defsym_value(Context<E> &ctx, std::string_view s) {
 
 template <typename E>
 std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
+  // std::span
+  //   https://en.cppreference.com/w/cpp/container/span
   std::span<std::string_view> args = ctx.cmdline_args;
+  // skip the first one
+  // By convention, the first of these strings (i.e., argv[0]) should contain the filename
+  // associated with the file being executed.
   args = args.subspan(1);
 
   std::vector<std::string> remaining;
   std::string_view arg;
 
+  // isatty
+  //   https://www.man7.org/linux/man-pages/man3/isatty.3.html
+  //   https://man7.org/linux/man-pages/man3/isatty.3p.html
+  // STDERR_FILENO
+  //   https://man7.org/linux/man-pages/man3/stdin.3.html
+  //   https://man7.org/linux/man-pages/man3/stdin.3p.html
   ctx.arg.color_diagnostics = isatty(STDERR_FILENO);
 
   bool version_shown = false;
@@ -537,6 +586,11 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     }
   };
 
+  // -X
+  // --discard-locals
+  //   Delete all temporary local symbols. (These symbols start with system-specific local label
+  //   prefixes, typically ‘.L’ for ELF systems or ‘L’ for traditional a.out systems.)
+  //
   // RISC-V object files contains lots of local symbols, so by default
   // we discard them. This is compatible with GNU ld.
   if constexpr (is_riscv<E>)
@@ -553,6 +607,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   if constexpr (is_sh4<E>)
     ctx.arg.apply_dynamic_relocs = true;
 
+  // -ooutput, --output=output, --output output
+  // -usymbol, --undefined=symbol, -undefined=symbol, --undefined symbol, -undefined symbol
   auto read_arg = [&](std::string name) {
     for (const std::string &opt : add_dashes(name)) {
       if (args[0] == opt) {
@@ -563,6 +619,14 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
         return true;
       }
 
+      // https://sourceware.org/binutils/docs/ld.html#Options
+      //   For options whose names are a single letter, option arguments must either follow the
+      //   option letter without intervening whitespace, or be given as separate arguments immediately following the option that requires them.
+      //
+      // Arguments to multiple-letter options must either be separated from the option name by an
+      // equals sign, or be given as separate arguments immediately following the option that
+      // requires them. For example, ‘--trace-symbol foo’ and ‘--trace-symbol=foo’ are equivalent.
+      // Unique abbreviations of the names of multiple-letter options are accepted.
       std::string prefix = (name.size() == 1) ? opt : opt + "=";
       if (args[0].starts_with(prefix)) {
         arg = args[0].substr(prefix.size());
@@ -573,6 +637,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
+  // --shuffle-sections=number
   auto read_eq = [&](std::string name) {
     for (const std::string &opt : add_dashes(name)) {
       if (args[0].starts_with(opt + "=")) {
@@ -584,6 +649,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
+  // -v, --version, -verion
   auto read_flag = [&](std::string name) {
     for (const std::string &opt : add_dashes(name)) {
       if (args[0] == opt) {
@@ -594,6 +660,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
+  // -z origin, -zorigin
   auto read_z_flag = [&](std::string name) {
     if (args.size() >= 2 && args[0] == "-z" && args[1] == name) {
       args = args.subspan(2);
@@ -607,6 +674,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
+  // -z max-page-size=number, -zmax-page-size=number
   auto read_z_arg = [&](std::string name) {
     if (args.size() >= 2 && args[0] == "-z" && args[1].starts_with(name + "=")) {
       arg = args[1].substr(name.size() + 1);
@@ -626,6 +694,9 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     if (read_flag("help")) {
       Out(ctx) << "Usage: " << ctx.cmdline_args[0]
                << " [options] file...\n" << helpmsg;
+
+      // std::exit
+      //   https://en.cppreference.com/w/cpp/utility/program/exit
       exit(0);
     }
 
@@ -651,6 +722,16 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
                << "   elf64alpha\n   elf64loongarch\n   elf32loongarch";
       version_shown = true;
     } else if (read_arg("m")) {
+      // -m target: Choose a target.
+      //
+      // -m emulation
+      //    Emulate the emulation linker. You can list the available emulations with the ‘--verbose’
+      //    or ‘-V’ options.
+      //
+      //    If the ‘-m’ option is not used, the emulation is taken from the LDEMULATION environment
+      //    variable, if that is defined.
+      //
+      //    Otherwise, the default emulation depends upon how the linker was configured.
       if (arg == "elf_x86_64") {
         ctx.arg.emulation = X86_64::target_name;
       } else if (arg == "elf_i386") {
@@ -707,6 +788,15 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("Bno-symbolic")) {
       ctx.arg.Bsymbolic = BSYMBOLIC_NONE;
     } else if (read_arg("exclude-libs")) {
+      // --exclude-libs=libraries ...: Mark all symbols in the given libraries hidden.
+      //
+      // --exclude-libs lib,lib,...
+      // Specifies a list of archive libraries from which symbols should not be automatically
+      // exported. The library names may be delimited by commas or colons. Specifying --exclude-libs
+      // ALL excludes symbols in all archive libraries from automatic export. This option is
+      // available only for the i386 PE targeted port of the linker and for ELF targeted ports. For
+      // i386 PE, symbols explicitly listed in a .def file are still exported, regardless of this
+      // option. For ELF targeted ports, symbols affected by this option will be treated as hidden.
       append(ctx.arg.exclude_libs, split_by_comma_or_colon(arg));
     } else if (read_flag("q") || read_flag("emit-relocs")) {
       ctx.arg.emit_relocs = true;
@@ -740,6 +830,27 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_arg("dependency-file")) {
       ctx.arg.dependency_file = arg;
     } else if (read_arg("defsym")) {
+      // --defsym=symbol=value: Define symbol as an alias for value.
+      // value is either an integer (in decimal or hexadecimal with 0x prefix) or a symbol name. If
+      // an integer is given as a value, symbol is defined as an absolute symbol with the given
+      // value.
+      //
+      // --defsym=symbol=expression
+      // Create a global symbol in the output file, containing the absolute address given by
+      // expression. You may use this option as many times as necessary to define multiple symbols
+      // in the command line. A limited form of arithmetic is supported for the expression in this
+      // context: you may give a hexadecimal constant or the name of an existing symbol, or use +
+      // and - to add or subtract hexadecimal constants or symbols. If you need more elaborate
+      // expressions, consider using the linker command language from a script (see Assigning Values
+      // to Symbols). Note: there should be no white space between symbol, the equals sign (“=”),
+      // and expression.
+      //
+      // The linker processes ‘--defsym’ arguments and ‘-T’ arguments in order, placing ‘--defsym’
+      // before ‘-T’ will define the symbol before the linker script from ‘-T’ is processed, while
+      // placing ‘--defsym’ after ‘-T’ will define the symbol after the linker script has been
+      // processed. This difference has consequences for expressions within the linker script that
+      // use the ‘--defsym’ symbols, which order is correct will depend on what you are trying to
+      // achieve.
       size_t pos = arg.find('=');
       if (pos == arg.npos || pos == arg.size() - 1)
         Fatal(ctx) << "-defsym: syntax error: " << arg;
@@ -773,6 +884,14 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_arg("filler")) {
       ctx.arg.filler = parse_hex(ctx, "filler", arg);
     } else if (read_arg("L") || read_arg("library-path")) {
+      /*
+       * -L dir, --library-path=dir: Add dir to the list of library search paths from which mold
+       * searches libraries for the -l option.
+       *
+       * Unlike the GNU linkers, mold does not have default search paths. This difference doesn't
+       * usually make any difference because the compiler driver always passes all necessary search
+       * paths to the linker.
+       */
       ctx.arg.library_paths.push_back(std::string(arg));
     } else if (read_arg("sysroot")) {
       ctx.arg.sysroot = arg;
@@ -789,11 +908,37 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       else
         Fatal(ctx) << "unknown --unresolved-symbols argument: " << arg;
     } else if (read_arg("undefined") || read_arg("u")) {
+      // -u symbol, --undefined=symbol: If symbol remains as an undefined symbol after reading all
+      // object files, and if there is a static archive that contains an object file defining
+      // symbol, pull out the object file and link it so that the output file contains a definition
+      // of symbol.
+      //
+      // -u symbol
+      // --undefined=symbol
+      // Force symbol to be entered in the output file as an undefined symbol. Doing this may, for
+      // example, trigger linking of additional modules from standard libraries. ‘-u’ may be
+      // repeated with different option arguments to enter additional undefined symbols. This option
+      // is equivalent to the EXTERN linker script command.
+      //
+      // If this option is being used to force additional modules to be pulled into the link, and if
+      // it is an error for the symbol to remain undefined, then the option --require-defined should
+      // be used instead.
       ctx.arg.undefined.push_back(get_symbol(ctx, arg));
     } else if (read_arg("undefined-glob")) {
+      // --undefined-glob=pattern: Synonym for --undefined, except that --undefined-glob takes a
+      // glob pattern instead of just a single symbol name.
       if (!ctx.arg.undefined_glob.add(arg, 0))
         Fatal(ctx) << "--undefined-glob: invalid pattern: " << arg;
     } else if (read_arg("require-defined")) {
+      // --require-defined=symbol: Like --undefined, except the new symbol must be defined by the
+      // end of the link.
+      //
+      // --require-defined=symbol
+      // Require that symbol is defined in the output file. This option is the same as option
+      // --undefined except that if symbol is not defined in the output file then the linker will
+      // issue an error and exit. The same effect can be achieved in a linker script by using
+      // EXTERN, ASSERT and DEFINED together. This option can be used multiple times to require
+      // additional symbols.
       ctx.arg.require_defined.push_back(get_symbol(ctx, arg));
     } else if (read_arg("init")) {
       ctx.arg.init = get_symbol(ctx, arg);
@@ -825,6 +970,14 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("no-apply-dynamic-relocs")) {
       ctx.arg.apply_dynamic_relocs = false;
     } else if (read_flag("trace")) {
+      // --trace: Print name of each input file.
+      //
+      // -t
+      // --trace
+      //    Print the names of the input files as ld processes them. If ‘-t’ is given twice then
+      //    members within archives are also printed. ‘-t’ output is useful to generate a list of
+      //    all the object files and scripts involved in linking, for example, when packaging files
+      //    for a linker bug report.
       ctx.arg.trace = true;
     } else if (read_flag("eh-frame-hdr")) {
       ctx.arg.eh_frame_hdr = true;
@@ -846,6 +999,24 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("no-gdb-index")) {
       ctx.arg.gdb_index = false;
     } else if (read_flag("r") || read_flag("relocatable")) {
+      // -r, --relocatable:
+      // Instead of generating an executable or a shared object file, combine input object files to
+      // generate another object file that can be used as an input to a linker.
+      //
+      // -r
+      // --relocatable
+      // Generate relocatable output—i.e., generate an output file that can in turn serve as input
+      // to ld. This is often called partial linking. As a side effect, in environments that support
+      // standard Unix magic numbers, this option also sets the output file’s magic number to
+      // OMAGIC. If this option is not specified, an absolute file is produced. When linking C++
+      // programs, this option will not resolve references to constructors; to do that, use ‘-Ur’.
+      //
+      // When an input file does not have the same format as the output file, partial linking is
+      // only supported if that input file does not contain any relocations. Different output
+      // formats can have further restrictions; for example some a.out-based formats do not support
+      // partial linking with input files in other formats at all.
+      //
+      // This option does the same thing as ‘-i’.
       ctx.arg.relocatable = true;
       ctx.arg.emit_relocs = true;
       ctx.arg.discard_locals = false;
@@ -908,6 +1079,15 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("no-omagic")) {
       ctx.arg.omagic = false;
     } else if (read_arg("oformat")) {
+      // --oformat=output-format
+      //    ld may be configured to support more than one kind of object file. If your ld is
+      //    configured this way, you can use the ‘--oformat’ option to specify the binary format for
+      //    the output object file. Even when ld is configured to support alternative object
+      //    formats, you don’t usually need to specify this, as ld should be configured to produce
+      //    as a default output format the most usual format on each machine. output-format is a
+      //    text string, the name of a particular format supported by the BFD libraries. (You can
+      //    list the available binary formats with ‘objdump -i’.) The script command OUTPUT_FORMAT
+      //    can also specify the output format, but this option overrides it.
       if (arg != "binary")
         Fatal(ctx) << "-oformat: " << arg << " is not supported";
       ctx.arg.oformat_binary = true;
@@ -948,6 +1128,10 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_z_flag("cet-report=error")) {
       ctx.arg.z_cet_report = CET_REPORT_ERROR;
     } else if (read_z_flag("execstack")) {
+      // -z execstack, -z no-warn-execstack
+      //    By default, the pages for the stack area (i.e. the pages where local variables reside)
+      //    are not executable for security reasons. -z execstack makes it executable.
+      //    -z noexecstack restores the default behavior.
       ctx.arg.z_execstack = true;
     } else if (read_z_flag("execstack-if-needed")) {
       ctx.arg.z_execstack_if_needed = true;

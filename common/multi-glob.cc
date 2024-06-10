@@ -73,10 +73,19 @@ i64 MultiGlob::find_aho_corasick(std::string_view str) {
 }
 
 static bool is_simple_pattern(std::string_view pat) {
+  // \*?: Matches zero or one * character.
+  // [^*[?]+: Matches one or more characters that are not *, [, or ?.
+  // \*?: Matches zero or one * character.
   static std::regex re(R"(\*?[^*[?]+\*?)", std::regex_constants::optimize);
+  // std::regex_match checks if the entire string matches the given regular expression.
   return std::regex_match(pat.begin(), pat.end(), re);
 }
 
+// The handle_stars function processes a given pattern string by converting it based on the presence
+// of wildcard * characters at the beginning and/or end of the string. The function aims to prepare
+// the pattern for use with the Aho-Corasick algorithm, which only supports substring matching. To
+// do this, the function uses null characters (\0) as markers for the start and end of the string,
+// allowing for proper handling of patterns that start and/or end with wildcards.
 static std::string handle_stars(std::string_view pat) {
   std::string str(pat);
 
@@ -92,6 +101,7 @@ static std::string handle_stars(std::string_view pat) {
   return "\0"s + str + "\0"s;
 }
 
+// It returns a bool indicating whether the pattern was successfully added.
 bool MultiGlob::add(std::string_view pat, i64 val) {
   assert(!is_compiled);
   assert(!pat.empty());

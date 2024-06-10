@@ -28,6 +28,7 @@ std::optional<Glob> Glob::compile(std::string_view pat) {
         pat = pat.substr(1);
       }
 
+      // Check if the brackets are paired.
       bool closed = false;
 
       while (!pat.empty()) {
@@ -43,6 +44,7 @@ std::optional<Glob> Glob::compile(std::string_view pat) {
             return {};
         }
 
+        // example: [a-z]
         if (pat.size() >= 3 && pat[1] == '-') {
           u8 start = pat[0];
           u8 end = pat[2];
@@ -66,6 +68,7 @@ std::optional<Glob> Glob::compile(std::string_view pat) {
         }
       }
 
+      // Check if the brackets are paired.
       if (!closed)
         return {};
 
@@ -109,6 +112,7 @@ bool Glob::do_match(std::string_view str, std::span<Element> elements) {
 
     switch (e.kind) {
     case STRING:
+      // example: abc
       if (!str.starts_with(e.str))
         return false;
       str = str.substr(e.str.size());
@@ -138,11 +142,13 @@ bool Glob::do_match(std::string_view str, std::span<Element> elements) {
           return true;
       return false;
     case QUESTION:
+      // example: ?
       if (str.empty())
         return false;
       str = str.substr(1);
       break;
     case BRACKET:
+      // example: [a-z]
       if (str.empty() || !e.bitset[str[0]])
         return false;
       str = str.substr(1);

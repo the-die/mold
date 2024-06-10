@@ -8,3 +8,5 @@ gentoo
 /mold-*.tar.gz
 /build*
 /mold
+/deploy
+!/build.sh

@@ -9,6 +9,7 @@
 
 namespace mold::elf {
 
+// see CMakeLists.txt:mold_instantiate_templates
 struct X86_64;
 struct I386;
 struct ARM64;
@@ -203,6 +204,7 @@ enum : u32 {
   PF_R = 4,
 };
 
+// https://man7.org/linux/man-pages/man5/elf.5.html
 enum : u32 {
   ET_NONE = 0,
   ET_REL = 1,
@@ -210,11 +212,25 @@ enum : u32 {
   ET_DYN = 3,
 };
 
+// ELFDATANONE
+//        Unknown data format.
+// ELFDATA2LSB
+//        Two's complement, little-endian.
+// ELFDATA2MSB
+//        Two's complement, big-endian.
 enum : u32 {
   ELFDATA2LSB = 1,
   ELFDATA2MSB = 2,
 };
 
+// ELFCLASSNONE
+//        This class is invalid.
+// ELFCLASS32
+//        This defines the 32-bit architecture.  It
+//        supports machines with files and virtual
+//        address spaces up to 4 Gigabytes.
+// ELFCLASS64
+//        This defines the 64-bit architecture.
 enum : u32 {
   ELFCLASS32 = 1,
   ELFCLASS64 = 2,
@@ -224,6 +240,7 @@ enum : u32 {
   EV_CURRENT = 1,
 };
 
+// https://www.sco.com/developers/gabi/latest/ch4.eheader.html
 enum : u32 {
   EM_NONE = 0,
   EM_386 = 3,
@@ -241,6 +258,7 @@ enum : u32 {
   EM_ALPHA = 0x9026,
 };
 
+// https://man7.org/linux/man-pages/man5/elf.5.html
 enum : u32 {
   EI_CLASS = 4,
   EI_DATA = 5,
@@ -1469,6 +1487,8 @@ enum : u32 {
 // ELF types
 //
 
+// i -> signed, u -> unsigned
+// l -> little, b -> big
 template <typename E> using I16 = std::conditional_t<E::is_le, il16, ib16>;
 template <typename E> using I32 = std::conditional_t<E::is_le, il32, ib32>;
 template <typename E> using I64 = std::conditional_t<E::is_le, il64, ib64>;
@@ -1477,6 +1497,7 @@ template <typename E> using U24 = std::conditional_t<E::is_le, ul24, ub24>;
 template <typename E> using U32 = std::conditional_t<E::is_le, ul32, ub32>;
 template <typename E> using U64 = std::conditional_t<E::is_le, ul64, ub64>;
 
+// https://en.cppreference.com/w/cpp/types/conditional
 template <typename E> using Word = std::conditional_t<E::is_64, U64<E>, U32<E>>;
 template <typename E> using IWord = std::conditional_t<E::is_64, I64<E>, I32<E>>;
 
@@ -1548,6 +1569,7 @@ struct ElfShdr {
   Word<E> sh_entsize;
 };
 
+// https://man7.org/linux/man-pages/man5/elf.5.html
 template <typename E>
 struct ElfEhdr {
   u8 e_ident[16];

@@ -14,6 +14,7 @@ typedef enum {
 static i64 to_p2align(u64 alignment) {
   if (alignment == 0)
     return 0;
+  // https://en.cppreference.com/w/cpp/numeric/countr_zero
   return std::countr_zero(alignment);
 }
 
@@ -42,6 +43,19 @@ InputSection<E>::InputSection(Context<E> &ctx, ObjectFile<E> &file, i64 shndx)
   if (shndx < file.elf_sections.size())
     contents = {(char *)file.mf->data + shdr().sh_offset, (size_t)shdr().sh_size};
 
+  // https://www.sco.com/developers/gabi/latest/ch4.sheader.html
+  // SHF_COMPRESSED
+  // This flag identifies a section containing compressed data. SHF_COMPRESSED applies only to
+  // non-allocable sections, and cannot be used in conjunction with SHF_ALLOC. In addition,
+  // SHF_COMPRESSED cannot be applied to sections of type SHT_NOBITS.
+  //
+  // All relocations to a compressed section specifiy offsets to the uncompressed section data. It
+  // is therefore necessary to decompress the section data before relocations can be applied. Each
+  // compressed section specifies the algorithm independently. It is permissible for different
+  // sections in a given ELF object to employ different compression algorithms.
+  //
+  // Compressed sections begin with a compression header structure that identifies the compression
+  // algorithm.
   if (shdr().sh_flags & SHF_COMPRESSED) {
     ElfChdr<E> &chdr = *(ElfChdr<E> *)&contents[0];
     sh_size = chdr.ch_size;
@@ -75,6 +89,7 @@ void InputSection<E>::uncompress(Context<E> &ctx) {
   uncompressed = true;
 }
 
+// uncompress and copy contents
 template <typename E>
 void InputSection<E>::copy_contents(Context<E> &ctx, u8 *buf) {
   if (!(shdr().sh_flags & SHF_COMPRESSED) || uncompressed) {

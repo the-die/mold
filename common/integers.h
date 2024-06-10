@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 
+// https://gcc.gnu.org/onlinedocs/cpp/Common-Predefined-Macros.html
 #if !defined(__LITTLE_ENDIAN__) && !defined(__BIG_ENDIAN__)
 # if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
 #  define __LITTLE_ENDIAN__ 1
@@ -36,16 +37,21 @@
 
 namespace mold {
 
+// unsigned
 typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
+// signed
 typedef int8_t i8;
 typedef int16_t i16;
 typedef int32_t i32;
 typedef int64_t i64;
 
+// https://gcc.gnu.org/onlinedocs/gcc/Other-Builtins.html
+// https://man7.org/linux/man-pages/man3/bswap.3.html
+// https://en.cppreference.com/w/cpp/numeric/byteswap
 template <typename T>
 static inline T bswap(T val) {
   switch (sizeof(T)) {
@@ -56,12 +62,19 @@ static inline T bswap(T val) {
   }
 }
 
+// MSB    LSB
+// 0x12_34_56
+//
+// LO      HI
+// 56, 34, 12
+// https://en.cppreference.com/w/cpp/types/endian
 template <typename T, int SIZE = sizeof(T)>
 class LittleEndian {
 public:
   LittleEndian() = default;
   LittleEndian(T x) { *this = x; }
 
+  // convert to T
   operator T() const {
     if constexpr (sizeof(T) == SIZE) {
       T x;
@@ -89,10 +102,13 @@ public:
     return *this;
   }
 
+  // prefix
   LittleEndian &operator++() {
+    // convert *this to T then add 1
     return *this = *this + 1;
   }
 
+  // suffix
   LittleEndian operator++(int) {
     T ret = *this;
     *this = *this + 1;
@@ -137,6 +153,11 @@ using ul24 = LittleEndian<u32, 3>;
 using ul32 = LittleEndian<u32>;
 using ul64 = LittleEndian<u64>;
 
+// MSB    LSB
+// 0x12_34_56
+//
+// LO      HI
+// 12, 34, 56
 template <typename T, int SIZE = sizeof(T)>
 class BigEndian {
 public:

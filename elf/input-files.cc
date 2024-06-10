@@ -21,6 +21,8 @@ Symbol<E> *get_symbol(Context<E> &ctx, std::string_view key,
   return const_cast<Symbol<E> *>(&acc->second);
 }
 
+// https://sourceware.org/binutils/docs/ld/VERSION.html
+// https://akkadia.org/drepper/symbol-versioning
 template <typename E>
 Symbol<E> *get_symbol(Context<E> &ctx, std::string_view key) {
   std::string_view name = key.substr(0, key.find('@'));
@@ -61,6 +63,7 @@ std::ostream &operator<<(std::ostream &out, const Symbol<E> &sym) {
   return out;
 }
 
+// The `InputFile` class abstracuts an ELF object file.
 template <typename E>
 InputFile<E>::InputFile(Context<E> &ctx, MappedFile *mf)
   : mf(mf), filename(mf->name) {
@@ -69,9 +72,11 @@ InputFile<E>::InputFile(Context<E> &ctx, MappedFile *mf)
   if (memcmp(mf->data, "\177ELF", 4))
     Fatal(ctx) << *this << ": not an ELF file";
 
+  // ELF header
   ElfEhdr<E> &ehdr = *(ElfEhdr<E> *)mf->data;
   is_dso = (ehdr.e_type == ET_DYN);
 
+  // Section header
   ElfShdr<E> *sh_begin = (ElfShdr<E> *)(mf->data + ehdr.e_shoff);
 
   // e_shnum contains the total number of sections in an object file.
@@ -90,6 +95,7 @@ InputFile<E>::InputFile(Context<E> &ctx, MappedFile *mf)
   i64 shstrtab_idx = (ehdr.e_shstrndx == SHN_XINDEX)
     ? sh_begin->sh_link : ehdr.e_shstrndx;
 
+  // Section header string table
   shstrtab = this->get_string(ctx, shstrtab_idx);
 }
 
@@ -99,6 +105,7 @@ std::span<ElfPhdr<E>> InputFile<E>::get_phdrs() {
   return {(ElfPhdr<E> *)(mf->data + ehdr.e_phoff), ehdr.e_phnum};
 }
 
+// Traverse all sections and return the first section that satisfies the type.
 template <typename E>
 ElfShdr<E> *InputFile<E>::find_section(i64 type) {
   for (ElfShdr<E> &sec : elf_sections)
@@ -231,6 +238,7 @@ static bool is_known_section_type(const ElfShdr<E> &shdr) {
   u32 ty = shdr.sh_type;
   u32 flags = shdr.sh_flags;
 
+  // https://www.sco.com/developers/gabi/latest/ch4.sheader.html
   if (ty == SHT_PROGBITS ||
       ty == SHT_NOTE ||
       ty == SHT_NOBITS ||
@@ -254,17 +262,29 @@ static bool is_known_section_type(const ElfShdr<E> &shdr) {
 
 template <typename E>
 void ObjectFile<E>::initialize_sections(Context<E> &ctx) {
+  // Read section headers and contents
   // Read sections
   for (i64 i = 0; i < this->elf_sections.size(); i++) {
     const ElfShdr<E> &shdr = this->elf_sections[i];
+    // sh_name
+    //    This member specifies the name of the section. Its value is an index into the section
+    //    header string table section, giving the location of a null-terminated string.
     std::string_view name = this->shstrtab.data() + shdr.sh_name;
 
+    // SHF_EXCLUDE
+    //    https://docs.oracle.com/en/operating-systems/solaris/oracle-solaris/11.4/linkers-libraries/section-headers.html
+    //    This section is excluded from input to the link-edit of an executable or shared object.
+    //    This flag is ignored if the SHF_ALLOC flag is also set, or if relocations exist against
+    //    the section.
     if ((shdr.sh_flags & SHF_EXCLUDE) &&
         name.starts_with(".gnu.offload_lto_.symtab.")) {
+      // https://gcc.gnu.org/wiki/Offloading
       this->is_gcc_offload_obj = true;
       continue;
     }
 
+    // SHT_LLVM_ADDRSIG Section (address-significance table)
+    //    https://llvm.org/docs/Extensions.html
     if ((shdr.sh_flags & SHF_EXCLUDE) && !(shdr.sh_flags & SHF_ALLOC) &&
         shdr.sh_type != SHT_LLVM_ADDRSIG && !ctx.arg.relocatable)
       continue;
@@ -282,6 +302,17 @@ void ObjectFile<E>::initialize_sections(Context<E> &ctx) {
 
     switch (shdr.sh_type) {
     case SHT_GROUP: {
+      // SHT_GROUP
+      //    This section defines a section group. A section group is a set of sections that are
+      //    related and that must be treated specially by the linker (see below for further
+      //    details). Sections of type SHT_GROUP may appear only in relocatable objects (objects
+      //    with the ELF header e_type member set to ET_REL). The section header table entry for a
+      //    group section must appear in the section header table before the entries for any of the
+      //    sections that are members of the group.
+      //
+      // The symbol table index of an entry in the associated symbol table. The name of the
+      // specified symbol table entry provides a signature for the section group.
+      //
       // Get the signature of this section group.
       if (shdr.sh_info >= this->elf_syms.size())
         Fatal(ctx) << *this << ": invalid symbol index";
@@ -507,6 +538,8 @@ void ObjectFile<E>::parse_ehframe(Context<E> &ctx) {
       if (size == 0)
         break;
 
+      // begin
+      // | size | ...... data ...... |
       i64 begin_offset = data.data() - contents.data();
       i64 end_offset = begin_offset + size + 4;
       i64 id = *(U32<E> *)(data.data() + 4);
@@ -637,6 +670,10 @@ void ObjectFile<E>::initialize_symbols(Context<E> &ctx) {
       }
     }
 
+    // --wrap=symbol:
+    // Make symbol be resolved to __wrap_symbol. The original symbol can be resolved as
+    // __real_symbol. This option is typically used for wrapping an existing function.
+    //
     // Handle --wrap option
     Symbol<E> *sym;
     if (esym.is_undef() && name.starts_with("__real_") &&
@@ -932,12 +969,24 @@ void ObjectFile<E>::parse(Context<E> &ctx) {
   symtab_sec = this->find_section(SHT_SYMTAB);
 
   if (symtab_sec) {
+    // https://www.sco.com/developers/gabi/latest/ch4.symtab.html
+    //    sh_info
+    //    One greater than the symbol table index of the last local symbol (binding STB_LOCAL).
     // In ELF, all local symbols precede global symbols in the symbol table.
     // sh_info has an index of the first global symbol.
     this->first_global = symtab_sec->sh_info;
     this->elf_syms = this->template get_data<ElfSym<E>>(ctx, *symtab_sec);
     this->symbol_strtab = this->get_string(ctx, symtab_sec->sh_link);
 
+    // SHT_SYMTAB_SHNDX
+    //    This section is associated with a symbol table section and is required if any of the
+    //    section header indexes referenced by that symbol table contain the escape value
+    //    SHN_XINDEX. The section is an array of Elf32_Word values. Each value corresponds one to
+    //    one with a symbol table entry and appear in the same order as those entries. The values
+    //    represent the section header indexes against which the symbol table entries are defined.
+    //    Only if the corresponding symbol table entry's st_shndx field contains the escape value
+    //    SHN_XINDEX will the matching Elf32_Word hold the actual section header index; otherwise,
+    //    the entry must be SHN_UNDEF (0).
     if (ElfShdr<E> *shdr = this->find_section(SHT_SYMTAB_SHNDX))
       symtab_shndx_sec = this->template get_data<U32<E>>(ctx, *shdr);
   }
@@ -1032,6 +1081,7 @@ void ObjectFile<E>::resolve_symbols(Context<E> &ctx) {
     Symbol<E> &sym = *this->symbols[i];
     const ElfSym<E> &esym = this->elf_syms[i];
 
+    // skip undefined ELF symbol
     if (esym.is_undef())
       continue;
 
@@ -1043,6 +1093,7 @@ void ObjectFile<E>::resolve_symbols(Context<E> &ctx) {
     }
 
     std::scoped_lock lock(sym.mu);
+    // The current ELF symbol's priority is higher than the symbol's priority.
     if (get_rank(this, esym, !this->is_alive) < get_rank(sym)) {
       sym.file = this;
       sym.set_input_section(isec);
@@ -1305,6 +1356,10 @@ SharedFile<E>::SharedFile(Context<E> &ctx, MappedFile *mf)
 
 template <typename E>
 std::string SharedFile<E>::get_soname(Context<E> &ctx) {
+  // https://www.sco.com/developers/gabi/latest/ch5.dynamic.html
+  // DT_SONAME
+  // This element holds the string table offset of a null-terminated string, giving the name of the
+  // shared object. The offset is an index into the table recorded in the DT_STRTAB entry.
   if (ElfShdr<E> *sec = this->find_section(SHT_DYNAMIC))
     for (ElfDyn<E> &dyn : this->template get_data<ElfDyn<E>>(ctx, *sec))
       if (dyn.d_tag == DT_SONAME)
@@ -1429,11 +1484,14 @@ void SharedFile<E>::resolve_symbols(Context<E> &ctx) {
   for (i64 i = 0; i < this->symbols.size(); i++) {
     Symbol<E> &sym = *this->symbols[i];
     const ElfSym<E> &esym = this->elf_syms[i];
+
+    // skip undefined ELF symbols
     if (esym.is_undef())
       continue;
 
     std::scoped_lock lock(sym.mu);
 
+    // The current ELF symbol's priority is higher than the symbol's priority.
     if (get_rank(this, esym, false) < get_rank(sym)) {
       sym.file = this;
       sym.origin = 0;

@@ -42,6 +42,8 @@
 #endif
 
 inline uint64_t hash_string(std::string_view str) {
+  // XXH3_64bits
+  //   https://xxhash.com/
   return XXH3_64bits(str.data(), str.size());
 }
 
@@ -75,6 +77,8 @@ std::string get_self_path();
 void cleanup();
 void install_signal_handler();
 
+// hash_combine
+//   https://github.com/boostorg/container_hash/blob/6d214eb776456bf17fbee20780a034a23438084f/doc/hash/notes.adoc
 static u64 combine_hash(u64 a, u64 b) {
   return a ^ (b + 0x9e3779b9 + (a << 6) + (a >> 2));
 }
@@ -94,6 +98,9 @@ public:
   }
 
   template <typename T> SyncStream &operator<<(T &&val) {
+    // std::forward
+    //   https://en.cppreference.com/w/cpp/language/reference
+    //   https://en.cppreference.com/w/cpp/utility/forward
     ss << std::forward<T>(val);
     return *this;
   }
@@ -111,9 +118,20 @@ private:
   std::ostream &out;
   std::stringstream ss;
   bool emitted = false;
+  // Static data members
+  //   https://en.cppreference.com/w/cpp/language/static
   static inline std::mutex mu;
 };
 
+// tty, pts, pty
+//   https://docs.kernel.org/admin-guide/devices.html
+//   https://en.wikipedia.org/wiki/ANSI_escape_code
+//   https://man7.org/linux/man-pages/man4/console_codes.4.html
+//   https://man7.org/linux/man-pages/man4/tty.4.html
+//   https://man7.org/linux/man-pages/man4/ttys.4.html
+//   https://man7.org/linux/man-pages/man4/pts.4.html
+//   https://man7.org/linux/man-pages/man7/pty.7.html
+//   https://wiki.archlinux.org/title/Linux_console
 template <typename Context>
 class Out {
 public:
@@ -161,6 +179,10 @@ template <typename Context>
 class Error {
 public:
   Error(Context &ctx) {
+    // --noinhibit-exec
+    //    Retain the executable output file whenever it is still usable. Normally, the linker will
+    //    not produce an output file if it encounters errors during the link process; it exits
+    //    without writing an output file when it issues any error whatsoever.
     if (ctx.arg.noinhibit_exec) {
       out << (ctx.arg.color_diagnostics ? warning_color : warning_mono);
     } else {
@@ -187,6 +209,10 @@ public:
 
     out.emplace(std::cerr);
 
+    // --fatal-warnings
+    // --no-fatal-warnings
+    //    Treat all warnings as errors. The default behaviour can be restored with the option
+    //    --no-fatal-warnings.
     if (ctx.arg.fatal_warnings) {
       *out << (ctx.arg.color_diagnostics ? error_color : error_mono);
       ctx.has_error = true;
@@ -525,6 +551,7 @@ inline void overwrite_uleb(u8 *loc, u64 val) {
   *loc = val & 0b0111'1111;
 }
 
+// put the `str` into the `ctx` string pool
 template <typename Context>
 std::string_view save_string(Context &ctx, const std::string &str) {
   u8 *buf = new u8[str.size() + 1];
@@ -534,6 +561,7 @@ std::string_view save_string(Context &ctx, const std::string &str) {
   return {(char *)buf, str.size()};
 }
 
+// remove prefix if `s` start with `prefix`
 inline bool remove_prefix(std::string_view &s, std::string_view prefix) {
   if (s.starts_with(prefix)) {
     s = s.substr(prefix.size());
@@ -877,6 +905,11 @@ private:
 // filepath.cc
 //
 
+// std::filesystem::path
+//   https://en.cppreference.com/w/cpp/filesystem/path
+// std::filesystem::path::format
+//   https://en.cppreference.com/w/cpp/filesystem/path/format
+//   https://www.boost.org/doc/libs/1_85_0/libs/filesystem/doc/tutorial.html#Class-path-formats
 std::filesystem::path filepath(const auto &path) {
   return {path, std::filesystem::path::format::generic_format};
 }
@@ -1005,8 +1038,8 @@ public:
   u8 *data = nullptr;
   i64 size = 0;
   bool given_fullpath = true;
-  MappedFile *parent = nullptr;
-  MappedFile *thin_parent = nullptr;
+  MappedFile *parent = nullptr; // for fat archive
+  MappedFile *thin_parent = nullptr; // for thin archive
 
   // For --dependency-file
   bool is_dependency = true;
@@ -1018,10 +1051,14 @@ public:
 #endif
 };
 
+// open_file        -->   open_file_impl
+// must_open_file   -->   open_file
+
 MappedFile *open_file_impl(const std::string &path, std::string &error);
 
 template <typename Context>
 MappedFile *open_file(Context &ctx, std::string path) {
+  // --chroot=dir: Set dir as the root directory.
   if (path.starts_with('/') && !ctx.arg.chroot.empty())
     path = ctx.arg.chroot + "/" + path_clean(path);
 
@@ -1030,11 +1067,14 @@ MappedFile *open_file(Context &ctx, std::string path) {
   if (!error.empty())
     Fatal(ctx) << error;
 
+  // Use `unique_ptr` to manage memory resources.
   if (mf)
     ctx.mf_pool.push_back(std::unique_ptr<MappedFile>(mf));
   return mf;
 }
 
+// Open the `path` file and return a `MappedFile*`.
+// Failure to open will result in a fatal error.
 template <typename Context>
 MappedFile *must_open_file(Context &ctx, std::string path) {
   MappedFile *mf = open_file(ctx, path);

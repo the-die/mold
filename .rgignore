@@ -1,0 +1,5 @@
+test/
+third-party/
+build/
+deploy/
+docs/

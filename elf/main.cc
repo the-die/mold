@@ -21,6 +21,7 @@
 # include <unistd.h>
 #endif
 
+// see CMakeLists.txt:mold_instantiate_templates
 #ifdef MOLD_X86_64
 int main(int argc, char **argv) {
   return mold::elf::elf_main<mold::elf::X86_64>(argc, argv);
@@ -29,6 +30,7 @@ int main(int argc, char **argv) {
 
 namespace mold::elf {
 
+// return machine type name
 // Read the beginning of a given file and returns its machine type
 // (e.g. EM_X86_64 or EM_386).
 template <typename E>
@@ -39,11 +41,11 @@ std::string_view get_machine_type(Context<E> &ctx, MappedFile *mf) {
     u32 e_machine;
 
     if (is_le) {
-      auto &ehdr = *(ElfEhdr<I386> *)buf;
+      auto &ehdr = *(ElfEhdr<I386> *)buf; // little endian
       is_64 = (ehdr.e_ident[EI_CLASS] == ELFCLASS64);
       e_machine = ehdr.e_machine;
     } else {
-      auto &ehdr = *(ElfEhdr<M68K> *)buf;
+      auto &ehdr = *(ElfEhdr<M68K> *)buf; // big endian
       is_64 = (ehdr.e_ident[EI_CLASS] == ELFCLASS64);
       e_machine = ehdr.e_machine;
     }
@@ -106,6 +108,16 @@ std::string_view get_machine_type(Context<E> &ctx, MappedFile *mf) {
   }
 }
 
+// -m target: Choose a target.
+//
+// -m emulation
+//    Emulate the emulation linker. You can list the available emulations with the ‘--verbose’ or
+//    ‘-V’ options.
+//
+//    If the ‘-m’ option is not used, the emulation is taken from the LDEMULATION environment
+//    variable, if that is defined.
+//
+//    Otherwise, the default emulation depends upon how the linker was configured.
 template <typename E>
 static void
 check_file_compatibility(Context<E> &ctx, MappedFile *mf) {
@@ -126,6 +138,7 @@ static ObjectFile<E> *new_object_file(Context<E> &ctx, MappedFile *mf,
   bool in_lib = ctx.in_lib || (!archive_name.empty() && !ctx.whole_archive);
   ObjectFile<E> *file = ObjectFile<E>::create(ctx, mf, archive_name, in_lib);
   file->priority = ctx.file_priority++;
+  // https://oneapi-src.github.io/oneTBB/main/reference/task_group_extensions.html
   ctx.tg.run([file, &ctx] { file->parse(ctx); });
   if (ctx.arg.trace)
     Out(ctx) << "trace: " << *file;
@@ -166,7 +179,7 @@ new_shared_file(Context<E> &ctx, MappedFile *mf) {
 
 template <typename E>
 void read_file(Context<E> &ctx, MappedFile *mf) {
-  if (ctx.visited.contains(mf->name))
+  if (ctx.visited.contains(mf->name)) // It has been visited, so skip it.
     return;
 
   switch (get_file_type(ctx, mf)) {
@@ -213,13 +226,14 @@ void read_file(Context<E> &ctx, MappedFile *mf) {
   }
 }
 
+// Read files from all paths and determine the machine type based on the file contents.
 template <typename E>
 static std::string_view
 detect_machine_type(Context<E> &ctx, std::vector<std::string> paths) {
   std::erase(paths, "-");
 
   for (const std::string &path : paths)
-    if (auto *mf = open_file(ctx, path))
+    if (auto *mf = open_file(ctx, path)) // This file might be reopened in read_input_files.
       if (get_file_type(ctx, mf) != FileType::TEXT)
         if (std::string_view target = get_machine_type(ctx, mf);
             !target.empty())
@@ -235,6 +249,7 @@ detect_machine_type(Context<E> &ctx, std::vector<std::string> paths) {
   Fatal(ctx) << "-m option is missing";
 }
 
+// try to open a library
 template <typename E>
 MappedFile *open_library(Context<E> &ctx, std::string path) {
   MappedFile *mf = open_file(ctx, path);
@@ -250,8 +265,10 @@ MappedFile *open_library(Context<E> &ctx, std::string path) {
   return mf;
 }
 
+// find a library named `name`
 template <typename E>
 MappedFile *find_library(Context<E> &ctx, std::string name) {
+  // -l:abc.lib -> abc.lib
   if (name.starts_with(':')) {
     for (std::string_view dir : ctx.arg.library_paths) {
       std::string path = std::string(dir) + "/" + name.substr(1);
@@ -293,8 +310,51 @@ static void read_input_files(Context<E> &ctx, std::span<std::string> args) {
 
   while (!args.empty()) {
     std::string_view arg = args[0];
+    // skip first arg
     args = args.subspan(1);
 
+    /*
+     * --as-needed, --no-as-needed: By default, shared libraries given to the linker are
+     * unconditionally added to the list of required libraries in an output file. However, shared
+     * libraries after --as-needed are added to the list only when at least one symbol is actually
+     * used by the output file. In other words, shared libraries after --as-needed are not added to
+     * the list of needed libraries if they are not needed by a program.
+     *
+     * The --no-as-needed option restores the default behavior for subsequent files.
+     *
+     * --whole-archive, --no-whole-archive: When archive files (.a files) are given to the linker,
+     * only object files that are needed to resolve undefined symbols are extracted from them and
+     * linked to an output file. --whole-archive changes that behavior for subsequent archives so
+     * that the linker extracts all object files and links them to an output. For example, if you
+     * are creating a shared object file and you want to include all archive members to the output,
+     * you should pass --whole-archive. --no-whole-archive restores the default behavior for
+     * subsequent archives.
+     *
+     * --Bstatic: Do not link against shared libraries.
+     *
+     * --Bdynamic: Link against shared libraries.
+     *
+     * --start-lib, --end-lib: Handle object files between --start-lib and --end-lib as if they were
+     * in an archive file. That means object files between them are linked only when they are needed
+     * to resolve undefined symbols. The options are useful if you want to link object files only
+     * when they are needed but want to avoid the overhead of running ar(3).
+     *
+     * --version-script=file: Read version script from file. If file does not exist in the current
+     * directory, it is searched from library search paths for the sake of compatibility with GNU
+     * ld.
+     *
+     * --push-state, --pop-state: --push-state saves the current values of --as-needed,
+     * --whole-archive, --static, and --start-lib. The saved values can be restored by pop-state.
+     *
+     * --push-state and --pop-state pairs can nest.
+     *
+     * These options are useful when you want to construct linker command line options
+     * programmatically. For example, if you want to link libfoo.so by as-needed basis but don't
+     * want to change the global state of --as-needed, you can append --push-state --as-needed -lfoo
+     * --pop-state to the linker command line options.
+     *
+     * -l libname: Search for liblibname.so or liblibname.a from library search paths.
+     */
     if (arg == "--as-needed") {
       ctx.as_needed = true;
     } else if (arg == "--no-as-needed") {
@@ -344,6 +404,8 @@ template <typename E>
 int elf_main(int argc, char **argv) {
   Context<E> ctx;
 
+  // see 'mold -run'
+  //   https://github.com/rui314/mold
   // Process -run option first. process_run_subcommand() does not return.
   if (argc >= 2 && (argv[1] == "-run"sv || argv[1] == "--run"sv)) {
 #if defined(_WIN32) || defined(__APPLE__)
@@ -356,6 +418,17 @@ int elf_main(int argc, char **argv) {
   ctx.cmdline_args = expand_response_files(ctx, argv);
   std::vector<std::string> file_args = parse_nonpositional_args(ctx);
 
+  // -m target: Choose a target.
+  //
+  //-m emulation
+  // Emulate the emulation linker. You can list the available emulations with the ‘--verbose’ or
+  // ‘-V’ options.
+  //
+  // If the ‘-m’ option is not used, the emulation is taken from the LDEMULATION environment
+  // variable, if that is defined.
+  //
+  // Otherwise, the default emulation depends upon how the linker was configured.
+  //
   // If no -m option is given, deduce it from input files.
   if (ctx.arg.emulation.empty())
     ctx.arg.emulation = detect_machine_type(ctx, file_args);
@@ -369,6 +442,8 @@ int elf_main(int argc, char **argv) {
 
   install_signal_handler();
 
+  // https://man7.org/linux/man-pages/man2/chdir.2.html
+  // https://man7.org/linux/man-pages/man3/chdir.3p.html
   if (!ctx.arg.directory.empty())
     if (chdir(ctx.arg.directory.c_str()) == -1)
       Fatal(ctx) << "chdir failed: " << ctx.arg.directory
@@ -402,6 +477,7 @@ int elf_main(int argc, char **argv) {
   // Parse input files
   read_input_files(ctx, file_args);
 
+  // https://en.wikipedia.org/wiki/Soname
   // Uniquify shared object files by soname
   {
     std::unordered_set<std::string_view> seen;
@@ -721,6 +797,7 @@ int elf_main(int argc, char **argv) {
   return 0;
 }
 
+// see elf.h
 using E = MOLD_TARGET;
 
 template int elf_main<E>(int, char **);

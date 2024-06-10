@@ -290,6 +290,9 @@ add_dependencies(mold git_hash)
 configure_file(common/config.h.in config.h)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
+# list
+#   https://cmake.org/cmake/help/latest/command/list.html
+
 # Almost all functions are template in mold which take a target type
 # (e.g. X86_64) as its type parameter. Since we suport more than 10
 # targets, compiling a single source file for all the targets is very
@@ -328,6 +331,9 @@ else()
   list(APPEND MOLD_ELF_TEMPLATE_FILES elf/lto-unix.cc)
 endif()
 
+# function
+#   https://cmake.org/cmake/help/latest/command/function.html
+
 function(mold_instantiate_templates SOURCE TARGET)
   set(PATH ${CMAKE_BINARY_DIR}/${SOURCE}.${TARGET}.cc)
   if(NOT EXISTS ${PATH})
@@ -338,6 +344,9 @@ function(mold_instantiate_templates SOURCE TARGET)
   endif()
   target_sources(mold PRIVATE ${PATH})
 endfunction()
+
+# foreach
+#   https://cmake.org/cmake/help/latest/command/foreach.html
 
 foreach (SOURCE IN LISTS MOLD_ELF_TEMPLATE_FILES)
   foreach(TARGET IN LISTS MOLD_ELF_TARGETS)

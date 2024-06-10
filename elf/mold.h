@@ -198,6 +198,17 @@ struct CieRecord {
 template <typename E>
 bool cie_equals(const CieRecord<E> &a, const CieRecord<E> &b);
 
+// System V Application Binary Interface
+// AMD64 Architecture Processor Supplement
+//
+// The call frame information needed for unwinding the stack is output into one or more ELF
+// sections of type SHT_X86_64_UNWIND. In the simplest case there will be one such section per
+// object file and it will be named .eh_frame. An .eh_frame section consists of one or more
+// subsections. Each subsection contains a CIE (Common Information Entry) followed by
+// varying number of FDEs (Frame Descriptor Entry). A FDE corresponds to an explicit or
+// compiler generated function in a compilation unit, all FDEs can access the CIE that begins
+// their subsection for data. If the code for a function is not one contiguous block, there will
+// be a separate FDE for each contiguous sub-piece.
 template <typename E>
 struct FdeRecord {
   FdeRecord(u32 input_offset, u32 rel_idx)
@@ -1138,10 +1149,10 @@ public:
   std::span<ElfShdr<E>> elf_sections;
   std::span<ElfSym<E>> elf_syms;
   std::vector<Symbol<E> *> symbols;
-  i64 first_global = 0;
+  i64 first_global = 0; // first global symbol index in symbol table
 
   std::string filename;
-  bool is_dso = false;
+  bool is_dso = false; // a shared object
   i64 priority;
   Atomic<bool> is_alive = false;
   std::string_view shstrtab;
@@ -2415,6 +2426,7 @@ std::string_view MergeableSection<E>::get_contents(i64 i) {
   return contents.substr(cur, frag_offsets[i + 1] - cur);
 }
 
+// get the section content span
 template <typename E>
 template <typename T>
 inline std::span<T>
@@ -2425,6 +2437,7 @@ InputFile<E>::get_data(Context<E> &ctx, const ElfShdr<E> &shdr) {
   return {(T *)view.data(), view.size() / sizeof(T)};
 }
 
+// get the section content span
 template <typename E>
 template <typename T>
 inline std::span<T> InputFile<E>::get_data(Context<E> &ctx, i64 idx) {
@@ -2433,6 +2446,7 @@ inline std::span<T> InputFile<E>::get_data(Context<E> &ctx, i64 idx) {
   return this->template get_data<T>(elf_sections[idx]);
 }
 
+// get section content
 template <typename E>
 inline std::string_view
 InputFile<E>::get_string(Context<E> &ctx, const ElfShdr<E> &shdr) {
@@ -2443,6 +2457,7 @@ InputFile<E>::get_string(Context<E> &ctx, const ElfShdr<E> &shdr) {
   return {(char *)begin, (size_t)(end - begin)};
 }
 
+// get section content
 template <typename E>
 inline std::string_view InputFile<E>::get_string(Context<E> &ctx, i64 idx) {
   if (elf_sections.size() <= idx)
@@ -2455,6 +2470,14 @@ inline std::span<Symbol<E> *> InputFile<E>::get_global_syms() {
   return std::span<Symbol<E> *>(this->symbols).subspan(this->first_global);
 }
 
+// st_shndx
+//    Every symbol table entry is defined in relation to some section. This member holds the
+//    relevant section header table index. As the sh_link and sh_info interpretation table and the
+//    related text describe, some section indexes indicate special meanings.
+//
+//    If this member contains SHN_XINDEX, then the actual section header index is too large to fit
+//    in this field. The actual value is contained in the associated section of type
+//    SHT_SYMTAB_SHNDX.
 template <typename E>
 inline i64 ObjectFile<E>::get_shndx(const ElfSym<E> &esym) {
   assert(&this->elf_syms[0] <= &esym);

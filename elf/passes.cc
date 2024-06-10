@@ -57,6 +57,15 @@ int redo_main(Context<E> &ctx, int argc, char **argv) {
   unreachable();
 }
 
+// --exclude-libs=libraries ...: Mark all symbols in the given libraries hidden.
+//
+// --exclude-libs lib,lib,...
+// Specifies a list of archive libraries from which symbols should not be automatically exported.
+// The library names may be delimited by commas or colons. Specifying --exclude-libs ALL excludes
+// symbols in all archive libraries from automatic export. This option is available only for the
+// i386 PE targeted port of the linker and for ELF targeted ports. For i386 PE, symbols explicitly
+// listed in a .def file are still exported, regardless of this option. For ELF targeted ports,
+// symbols affected by this option will be treated as hidden.
 template <typename E>
 void apply_exclude_libs(Context<E> &ctx) {
   Timer t(ctx, "apply_exclude_libs");

@@ -34,6 +34,7 @@ bool is_text_file(MappedFile *mf) {
          istext(data[2]) && istext(data[3]);
 }
 
+// https://gcc.gnu.org/onlinedocs/gccint/LTO.html
 template <typename E, typename Context, typename MappedFile>
 inline bool is_gcc_lto_obj(Context &ctx, MappedFile *mf) {
   using namespace mold::elf;
@@ -43,12 +44,31 @@ inline bool is_gcc_lto_obj(Context &ctx, MappedFile *mf) {
   ElfShdr<E> *sh_begin = (ElfShdr<E> *)(data + ehdr.e_shoff);
   std::span<ElfShdr<E>> shdrs{(ElfShdr<E> *)(data + ehdr.e_shoff), ehdr.e_shnum};
 
+  // If the index of section name string table section is
+  // larger than or equal to SHN_LORESERVE (0xff00), this
+  // member holds SHN_XINDEX (0xffff) and the real index of the
+  // section name string table section is held in the sh_link
+  // member of the initial entry in section header table.
+  // Otherwise, the sh_link member of the initial entry in
+  // section header table contains the value zero.
+  //
   // e_shstrndx is a 16-bit field. If .shstrtab's section index is
   // too large, the actual number is stored to sh_link field.
   i64 shstrtab_idx = (ehdr.e_shstrndx == SHN_XINDEX)
     ? sh_begin->sh_link : ehdr.e_shstrndx;
 
   for (ElfShdr<E> &sec : shdrs) {
+    // -plugin name
+    // Involve a plugin in the linking process. The name parameter is the absolute filename of the
+    // plugin. Usually this parameter is automatically added by the complier, when using link time
+    // optimization, but users can also add their own plugins if they so wish.
+    //
+    // Note that the location of the compiler originated plugins is different from the place where
+    // the ar, nm and ranlib programs search for their plugins. In order for those commands to make
+    // use of a compiler based plugin it must first be copied into the ${libdir}/bfd-plugins
+    // directory. All gcc based linker plugins are backward compatible, so it is sufficient to just
+    // copy in the newest one.
+    //
     // GCC FAT LTO objects contain both regular ELF sections and GCC-
     // specific LTO sections, so that they can be linked as LTO objects if
     // the LTO linker plugin is available and falls back as regular
@@ -89,6 +109,7 @@ inline bool is_gcc_lto_obj(Context &ctx, MappedFile *mf) {
   return false;
 }
 
+// Infer file type from file content.
 template <typename Context, typename MappedFile>
 FileType get_file_type(Context &ctx, MappedFile *mf) {
   using namespace elf;
@@ -98,6 +119,7 @@ FileType get_file_type(Context &ctx, MappedFile *mf) {
   if (data.empty())
     return FileType::EMPTY;
 
+  // https://man7.org/linux/man-pages/man5/elf.5.html
   if (data.starts_with("\177ELF")) {
     u8 byte_order = ((ElfEhdr<I386> *)data.data())->e_ident[EI_DATA];
 
@@ -137,6 +159,7 @@ FileType get_file_type(Context &ctx, MappedFile *mf) {
     return FileType::UNKNOWN;
   }
 
+  // https://opensource.apple.com/source/xnu/xnu-7195.81.3/EXTERNAL_HEADERS/mach-o/loader.h.auto.html
   if (data.starts_with("\xcf\xfa\xed\xfe")) {
     switch (*(ul32 *)(data.data() + 12)) {
     case 1: // MH_OBJECT
@@ -151,6 +174,9 @@ FileType get_file_type(Context &ctx, MappedFile *mf) {
     return FileType::UNKNOWN;
   }
 
+  // https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=include/aout/ar.h
+  // https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=bfd/archive.c
+  // https://sourceware.org/git/?p=binutils-gdb.git;a=blob;f=bfd/archive64.c
   if (data.starts_with("!<arch>\n"))
     return FileType::AR;
   if (data.starts_with("!<thin>\n"))

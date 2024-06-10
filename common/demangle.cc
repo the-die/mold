@@ -10,6 +10,9 @@
 
 namespace mold {
 
+// abi::__cxa_demangle
+//   https://gcc.gnu.org/onlinedocs/libstdc++/manual/ext_demangling.html
+//   https://gcc.gnu.org/onlinedocs/libstdc++/latest-doxygen/a00029.html
 std::optional<std::string_view> demangle_cpp(std::string_view name) {
   static thread_local char *buf;
   static thread_local size_t buflen;
@@ -30,6 +33,7 @@ std::optional<std::string_view> demangle_cpp(std::string_view name) {
   return {};
 }
 
+// https://github.com/LykenSol/rust-demangle.c
 std::optional<std::string_view> demangle_rust(std::string_view name) {
   static thread_local char *buf;
   free(buf);
