@@ -1248,48 +1248,23 @@ static bool extn_version_less(const Extn &e1, const Extn &e2) {
          std::tuple{e2.major, e2.minor};
 }
 
-static std::optional<Extn> read_extn_string(std::string_view &str) {
-  auto flags = std::regex_constants::optimize | std::regex_constants::ECMAScript;
-  static std::regex re(R"(^([a-z]+)(\d+)p(\d+))", flags);
-
-  std::cmatch m;
-  if (std::regex_search(str.data(), str.data() + str.size(), m, re)) {
-    str = str.substr(m.length());
-    return Extn{m[1], (i64)std::stoul(m[2]), (i64)std::stoul(m[3])};
-  }
-  return {};
-}
-
 static std::vector<Extn> parse_arch_string(std::string_view str) {
-  if (str.size() < 5)
-    return {};
-
-  // Parse the base part
-  std::string_view base = str.substr(0, 5);
-  if (base != "rv32i" && base != "rv32e" && base != "rv64i" && base != "rv64e")
-    return {};
-  str = str.substr(4);
-
-  std::optional<Extn> extn = read_extn_string(str);
-  if (!extn)
-    return {};
+  auto flags = std::regex_constants::optimize | std::regex_constants::ECMAScript;
+  static std::regex re(R"(^([a-z]|[a-z][a-z0-9]*[a-z])(\d+)p(\d+)(_|$))", flags);
 
   std::vector<Extn> vec;
-  extn->name = base;
-  vec.push_back(*extn);
 
-  // Parse extensions
-  while (!str.empty()) {
-    if (str[0] != '_')
+  for (;;) {
+    std::cmatch m;
+    if (!std::regex_search(str.data(), str.data() + str.size(), m, re))
       return {};
-    str = str.substr(1);
 
-    std::optional<Extn> extn = read_extn_string(str);
-    if (!extn)
-      return {};
-    vec.push_back(*extn);
+    vec.push_back(Extn{m[1], (i64)std::stoul(m[2]), (i64)std::stoul(m[3])});
+    if (m[4].length() == 0)
+      return vec;
+
+    str = str.substr(m.length());
   }
-  return vec;
 }
 
 static std::vector<Extn> merge_extensions(std::span<Extn> x, std::span<Extn> y) {
@@ -1314,8 +1289,8 @@ static std::vector<Extn> merge_extensions(std::span<Extn> x, std::span<Extn> y) 
     }
   }
 
-  vec.insert(vec.end(), x.begin(), x.end());
-  vec.insert(vec.end(), y.begin(), y.end());
+  append(vec, x);
+  append(vec, y);
   return vec;
 }
 
