@@ -406,6 +406,11 @@ int elf_main(int argc, char **argv) {
 
   // see 'mold -run'
   //   https://github.com/rui314/mold
+  //
+  // --run command arg...: Run command with mold /usr/bin/ld. Specifically, mold runs a given
+  // command with the LD_PRELOAD environment set to intercept exec(3) family functions and replaces
+  // argv[0] with itself if it is ld, ld.gold, or ld.lld.
+  //
   // Process -run option first. process_run_subcommand() does not return.
   if (argc >= 2 && (argv[1] == "-run"sv || argv[1] == "--run"sv)) {
 #if defined(_WIN32) || defined(__APPLE__)

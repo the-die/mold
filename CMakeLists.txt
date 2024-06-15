@@ -286,6 +286,9 @@ add_custom_target(git_hash
 
 add_dependencies(mold git_hash)
 
+# configure_file
+#   https://cmake.org/cmake/help/latest/command/configure_file.html
+#
 # Create config.h file
 configure_file(common/config.h.in config.h)
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
