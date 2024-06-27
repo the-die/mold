@@ -17,6 +17,7 @@
 
 namespace mold::elf {
 
+// https://github.com/rui314/mold/blob/main/docs/mold.md
 inline const char helpmsg[] = R"(
 Options:
   --help                      Report usage information
@@ -218,15 +219,15 @@ mold: supported targets: elf32-i386 elf64-x86-64 elf32-littlearm elf64-littleaar
 mold: supported emulations: elf_i386 elf_x86_64 armelf_linux_eabi aarch64linux aarch64elf elf32lriscv elf32briscv elf64lriscv elf64briscv elf32ppc elf32ppclinux elf64ppc elf64lppc elf64_s390 elf64_sparc m68kelf shlelf_linux elf64alpha elf64loongarch elf32loongarch)";
 
 // @file
-//   Read command-line options from file. The options read are inserted in place of the original
-//   @file option. If file does not exist, or cannot be read, then the option will be treated
-//   literally, and not removed.
 //
-//   Options in file are separated by whitespace. A whitespace character may be included in an
-//   option by surrounding the entire option in either single or double quotes. Any character
-//   (including a backslash) may be included by prefixing the character to be included with a
-//   backslash. The file may itself contain additional @file options; any such options will be
-//   processed recursively.
+// Read command-line options from file. The options read are inserted in place of the original @file
+// option. If file does not exist, or cannot be read, then the option will be treated literally, and
+// not removed.
+//
+// Options in file are separated by whitespace. A whitespace character may be included in an option
+// by surrounding the entire option in either single or double quotes. Any character (including a
+// backslash) may be included by prefixing the character to be included with a backslash. The file
+// may itself contain additional @file options; any such options will be processed recursively.
 template <typename E>
 static std::vector<std::string_view>
 read_response_file(Context<E> &ctx, std::string_view path, i64 depth) {
@@ -239,6 +240,7 @@ read_response_file(Context<E> &ctx, std::string_view path, i64 depth) {
   MappedFile *mf = must_open_file(ctx, std::string(path));
   std::string_view data((char *)mf->data, mf->size);
 
+  // Do not record response files as dependency files.
   mf->is_dependency = false;
 
   while (!data.empty()) {
@@ -306,11 +308,17 @@ read_response_file(Context<E> &ctx, std::string_view path, i64 depth) {
   return vec;
 }
 
+// response files
+//    https://gcc.gnu.org/wiki/Response_Files
+//
+//
 // @file
-//   Read command-line options from file. The options read are inserted in place of the original
-//   @file option. If file does not exist, or cannot be read, then the option will be treated
-//   literally, and not removed.
-//   https://sourceware.org/binutils/docs/ld.html
+//    https://sourceware.org/binutils/docs/ld.html
+//
+// Read command-line options from file. The options read are inserted in place of the original @file
+// option. If file does not exist, or cannot be read, then the option will be treated literally, and
+// not removed.
+//
 //
 // Replace "@path/to/some/text/file" with its file contents.
 template <typename E>
@@ -564,6 +572,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   // isatty
   //   https://www.man7.org/linux/man-pages/man3/isatty.3.html
   //   https://man7.org/linux/man-pages/man3/isatty.3p.html
+  //
   // STDERR_FILENO
   //   https://man7.org/linux/man-pages/man3/stdin.3.html
   //   https://man7.org/linux/man-pages/man3/stdin.3p.html
@@ -578,7 +587,10 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   std::optional<u64> shuffle_sections_seed;
   std::unordered_set<std::string_view> rpaths;
 
+  // Example
+  //    ctx.arg.rpaths: path1:path2
   auto add_rpath = [&](std::string_view arg) {
+    // https://en.cppreference.com/w/cpp/container/unordered_set/insert
     if (rpaths.insert(arg).second) {
       if (!ctx.arg.rpaths.empty())
         ctx.arg.rpaths += ':';
@@ -611,8 +623,9 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   if constexpr (is_sparc<E> || is_riscv<E>)
     ctx.arg.apply_dynamic_relocs = false;
 
-  // -ooutput, --output=output, --output output
-  // -usymbol, --undefined=symbol, -undefined=symbol, --undefined symbol, -undefined symbol
+  // Example
+  //    -ooutput, --output=output, --output output
+  //    -usymbol, --undefined=symbol, -undefined=symbol, --undefined symbol, -undefined symbol
   auto read_arg = [&](std::string name) {
     for (const std::string &opt : add_dashes(name)) {
       if (args[0] == opt) {
@@ -625,7 +638,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
 
       // https://sourceware.org/binutils/docs/ld.html#Options
       //   For options whose names are a single letter, option arguments must either follow the
-      //   option letter without intervening whitespace, or be given as separate arguments immediately following the option that requires them.
+      //   option letter without intervening whitespace, or be given as separate arguments
+      //   immediately following the option that requires them.
       //
       // Arguments to multiple-letter options must either be separated from the option name by an
       // equals sign, or be given as separate arguments immediately following the option that
@@ -641,7 +655,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
-  // --shuffle-sections=number
+  // Example
+  //    --shuffle-sections=number
   auto read_eq = [&](std::string name) {
     for (const std::string &opt : add_dashes(name)) {
       if (args[0].starts_with(opt + "=")) {
@@ -653,7 +668,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
-  // -v, --version, -verion
+  // Example
+  //    -v, --version, -verion
   auto read_flag = [&](std::string name) {
     for (const std::string &opt : add_dashes(name)) {
       if (args[0] == opt) {
@@ -1631,6 +1647,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
 
 using E = MOLD_TARGET;
 
+// Function template explicit instantiation
+//    https://en.cppreference.com/w/cpp/language/function_template
 template std::vector<std::string_view> expand_response_files(Context<E> &, char **);
 template std::vector<std::string> parse_nonpositional_args(Context<E> &ctx);
 

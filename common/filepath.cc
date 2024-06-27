@@ -27,7 +27,10 @@ std::string get_realpath(std::string_view path) {
 
 // std::filesystem::path::lexically_normal
 //   https://en.cppreference.com/w/cpp/filesystem/path/lexically_normal
+//
 // Removes redundant '/..' or '/.' from a given path.
+//
+//
 // The transformation is done purely by lexical processing.
 // This function does not access file system.
 std::string path_clean(std::string_view path) {

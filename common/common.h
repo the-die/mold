@@ -907,6 +907,7 @@ private:
 
 // std::filesystem::path
 //   https://en.cppreference.com/w/cpp/filesystem/path
+//
 // std::filesystem::path::format
 //   https://en.cppreference.com/w/cpp/filesystem/path/format
 //   https://www.boost.org/doc/libs/1_85_0/libs/filesystem/doc/tutorial.html#Class-path-formats
@@ -1036,7 +1037,7 @@ public:
     return name;
   }
 
-  std::string name;
+  std::string name; // path
   u8 *data = nullptr;
   i64 size = 0;
   bool given_fullpath = true;

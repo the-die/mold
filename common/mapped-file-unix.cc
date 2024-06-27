@@ -59,7 +59,7 @@ MappedFile *open_file_impl(const std::string &path, std::string &error) {
 void MappedFile::unmap() {
   if (size == 0 || parent || !data)
     return;
-  // unmap
+  // munmap
   //   https://man7.org/linux/man-pages/man2/mmap.2.html
   //   https://man7.org/linux/man-pages/man3/munmap.3p.html
   munmap(data, size);
