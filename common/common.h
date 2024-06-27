@@ -996,6 +996,8 @@ class MappedFile {
 public:
   ~MappedFile() { unmap(); }
   void unmap();
+  void close_fd();
+  void reopen_fd(const std::string &path);
 
   template <typename Context>
   MappedFile *slice(Context &ctx, std::string name, u64 start, u64 size) {

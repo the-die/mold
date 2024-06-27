@@ -44,7 +44,7 @@
 # features and behave exactly the same.
 
 cmake_minimum_required(VERSION 3.14)
-project(mold VERSION 2.32.0)
+project(mold VERSION 2.32.1)
 
 include(CMakeDependentOption)
 include(CheckSymbolExists)
@@ -58,7 +58,10 @@ endif()
 
 add_executable(mold)
 target_compile_features(mold PRIVATE cxx_std_20)
-target_link_libraries(mold PRIVATE ${CMAKE_DL_LIBS})
+
+if(MINGW)
+  target_link_libraries(mold PRIVATE dl)
+endif()
 
 if(NOT "${CMAKE_CXX_COMPILER_FRONTEND_VARIANT}" STREQUAL "MSVC")
   target_compile_options(mold PRIVATE
@@ -272,6 +275,12 @@ if(NOT APPLE AND NOT MSVC)
   target_link_options(mold PRIVATE -pthread)
 endif()
 
+# shm_open needs -lrt
+find_library(LIBRT rt)
+if(LIBRT)
+  target_link_libraries(mold PRIVATE rt)
+endif()
+
 check_symbol_exists(madvise sys/mman.h HAVE_MADVISE)
 
 # Create a .cc file containing the current git hash for `mold --version`.
@@ -328,7 +337,7 @@ list(APPEND MOLD_ELF_TEMPLATE_FILES
   elf/tls.cc
   )
 
-if(WIN32)
+if(WIN32 AND NOT MINGW)
   list(APPEND MOLD_ELF_TEMPLATE_FILES elf/lto-win32.cc)
 else()
   list(APPEND MOLD_ELF_TEMPLATE_FILES elf/lto-unix.cc)
