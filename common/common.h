@@ -291,6 +291,7 @@ public:
   }
 
   Counter &operator++(int) {
+    // https://en.cppreference.com/w/cpp/language/attributes/likely
     if (enabled) [[unlikely]]
       values.local()++;
     return *this;
@@ -310,6 +311,7 @@ private:
   i64 get_value();
 
   std::string_view name;
+  // https://oneapi-spec.uxlfoundation.org/specifications/oneapi/v1.3-rev-1/elements/onetbb/source/thread_local_storage/enumerable_thread_specific_cls
   tbb::enumerable_thread_specific<i64> values;
 
   static inline std::vector<Counter *> instances;

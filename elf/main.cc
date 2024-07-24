@@ -230,6 +230,8 @@ void read_file(Context<E> &ctx, MappedFile *mf) {
 template <typename E>
 static std::string_view
 detect_machine_type(Context<E> &ctx, std::vector<std::string> paths) {
+  // std::erase
+  //   https://en.cppreference.com/w/cpp/container/vector/erase2
   std::erase(paths, "-");
 
   for (const std::string &path : paths)
@@ -425,14 +427,14 @@ int elf_main(int argc, char **argv) {
 
   // -m target: Choose a target.
   //
-  //-m emulation
-  // Emulate the emulation linker. You can list the available emulations with the ‘--verbose’ or
-  // ‘-V’ options.
+  // -m emulation
+  //   Emulate the emulation linker. You can list the available emulations with the ‘--verbose’ or
+  //   ‘-V’ options.
   //
-  // If the ‘-m’ option is not used, the emulation is taken from the LDEMULATION environment
-  // variable, if that is defined.
+  //   If the ‘-m’ option is not used, the emulation is taken from the LDEMULATION environment
+  //   variable, if that is defined.
   //
-  // Otherwise, the default emulation depends upon how the linker was configured.
+  //   Otherwise, the default emulation depends upon how the linker was configured.
   //
   // If no -m option is given, deduce it from input files.
   if (ctx.arg.emulation.empty())

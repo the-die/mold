@@ -17,6 +17,9 @@
 
 namespace mold::elf {
 
+// Raw string literals
+//    https://en.cppreference.com/w/cpp/language/string_literal
+//
 // https://github.com/rui314/mold/blob/main/docs/mold.md
 inline const char helpmsg[] = R"(
 Options:
@@ -656,7 +659,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
   };
 
   // Example
-  //    --shuffle-sections=number
+  //    --shuffle-sections=number, -shuffle-sections=number
   auto read_eq = [&](std::string name) {
     for (const std::string &opt : add_dashes(name)) {
       if (args[0].starts_with(opt + "=")) {
@@ -680,7 +683,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
-  // -z origin, -zorigin
+  // Example
+  //    -z origin, -zorigin
   auto read_z_flag = [&](std::string name) {
     if (args.size() >= 2 && args[0] == "-z" && args[1] == name) {
       args = args.subspan(2);
@@ -694,7 +698,8 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     return false;
   };
 
-  // -z max-page-size=number, -zmax-page-size=number
+  // Example
+  //    -z max-page-size=number, -zmax-page-size=number
   auto read_z_arg = [&](std::string name) {
     if (args.size() >= 2 && args[0] == "-z" && args[1].starts_with(name + "=")) {
       arg = args[1].substr(name.size() + 1);
@@ -716,7 +721,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
                << " [options] file...\n" << helpmsg;
 
       // std::exit
-      //   https://en.cppreference.com/w/cpp/utility/program/exit
+      //    https://en.cppreference.com/w/cpp/utility/program/exit
       exit(0);
     }
 
@@ -727,12 +732,30 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("no-dynamic-linker")) {
       ctx.arg.dynamic_linker = "";
     } else if (read_flag("v")) {
+      // -v, --version: Report version information to stdout.
+      //
+      // -v
+      // --version
+      // -V
+      //   Display the version number for ld. The -V option also lists the supported emulations.
       Out(ctx) << get_mold_version();
       version_shown = true;
     } else if (read_flag("version")) {
+      // -v, --version: Report version information to stdout.
+      // -v
+      //
+      // --version
+      // -V
+      //   Display the version number for ld. The -V option also lists the supported emulations.
       Out(ctx) << get_mold_version();
       exit(0);
     } else if (read_flag("V")) {
+      // -V: Report version and target information to stdout.
+      //
+      // -v
+      // --version
+      // -V
+      //   Display the version number for ld. The -V option also lists the supported emulations.
       Out(ctx) << get_mold_version()
                << "\n  Supported emulations:\n   elf_x86_64\n   elf_i386\n"
                << "   aarch64linux\n   armelf_linux_eabi\n   elf64lriscv\n"
@@ -745,13 +768,13 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       // -m target: Choose a target.
       //
       // -m emulation
-      //    Emulate the emulation linker. You can list the available emulations with the ‘--verbose’
-      //    or ‘-V’ options.
+      //   Emulate the emulation linker. You can list the available emulations with the ‘--verbose’
+      //   or ‘-V’ options.
       //
-      //    If the ‘-m’ option is not used, the emulation is taken from the LDEMULATION environment
-      //    variable, if that is defined.
+      //   If the ‘-m’ option is not used, the emulation is taken from the LDEMULATION environment
+      //   variable, if that is defined.
       //
-      //    Otherwise, the default emulation depends upon how the linker was configured.
+      //   Otherwise, the default emulation depends upon how the linker was configured.
       if (arg == "elf_x86_64") {
         ctx.arg.emulation = X86_64::target_name;
       } else if (arg == "elf_i386") {
@@ -914,6 +937,11 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
        */
       ctx.arg.library_paths.push_back(std::string(arg));
     } else if (read_arg("sysroot")) {
+      // --sysroot=directory
+      //    Use directory as the location of the sysroot, overriding the configure-time default.
+      //    This option is only supported by linkers that were configured using --with-sysroot.
+      //
+      // --sysroot=dir: Set target system root directory to dir.
       ctx.arg.sysroot = arg;
     } else if (read_arg("unique")) {
       std::optional<Glob> pat = Glob::compile(arg);
@@ -1056,6 +1084,7 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
       ctx.arg.stats = true;
       Counter::enabled = true;
     } else if (read_arg("C") || read_arg("directory")) {
+      // change current working directory
       ctx.arg.directory = arg;
     } else if (read_arg("chroot")) {
       ctx.arg.chroot = arg;
@@ -1233,6 +1262,9 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("no-fatal-warnings")) {
       ctx.arg.fatal_warnings = false;
     } else if (read_flag("fork")) {
+      // --fork, --no-fork: Spawn a child process and let it do the actual linking. When linking a
+      // large program, the OS kernel can take a few hundred milliseconds to terminate a mold
+      // process. --fork hides that latency. By default, it does fork.
       ctx.arg.fork = true;
     } else if (read_flag("no-fork")) {
       ctx.arg.fork = false;
@@ -1272,6 +1304,16 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     } else if (read_flag("no-quick-exit")) {
       ctx.arg.quick_exit = false;
     } else if (read_arg("plugin")) {
+      // -plugin name
+      // Involve a plugin in the linking process. The name parameter is the absolute filename of the
+      // plugin. Usually this parameter is automatically added by the complier, when using link time
+      // optimization, but users can also add their own plugins if they so wish.
+      //
+      // Note that the location of the compiler originated plugins is different from the place where
+      // the ar, nm and ranlib programs search for their plugins. In order for those commands to
+      // make use of a compiler based plugin it must first be copied into the ${libdir}/bfd-plugins
+      // directory. All gcc based linker plugins are backward compatible, so it is sufficient to
+      // just copy in the newest one.
       ctx.arg.plugin = arg;
     } else if (read_arg("plugin-opt")) {
       ctx.arg.plugin_opt.push_back(std::string(arg));
@@ -1494,6 +1536,11 @@ std::vector<std::string> parse_nonpositional_args(Context<E> &ctx) {
     }
   }
 
+  // -L searchdir
+  // --library-path=searchdir
+  //
+  //    If searchdir begins with = or $SYSROOT, then this prefix will be replaced by the sysroot
+  //    prefix, controlled by the ‘--sysroot’ option, or specified when the linker is configured.
   if (!ctx.arg.sysroot.empty()) {
     for (std::string &path : ctx.arg.library_paths) {
       if (std::string_view(path).starts_with('='))

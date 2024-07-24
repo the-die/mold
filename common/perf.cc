@@ -12,6 +12,9 @@
 namespace mold {
 
 i64 Counter::get_value() {
+  // https://oneapi-spec.uxlfoundation.org/specifications/oneapi/v1.3-rev-1/elements/onetbb/source/thread_local_storage/enumerable_thread_specific_cls/combining
+  // Computes reduction over all elements using binary functor f. If there are no elements, creates
+  // the result using the same rules as for creating a thread-local element.
   return values.combine(std::plus());
 }
 
@@ -26,6 +29,7 @@ void Counter::print() {
 }
 
 static i64 now_nsec() {
+  // https://en.cppreference.com/w/cpp/chrono/steady_clock
   return (i64)std::chrono::steady_clock::now().time_since_epoch().count();
 }
 
@@ -39,10 +43,33 @@ static std::pair<i64, i64> get_usage() {
   GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user);
   return {to_nsec(user), to_nsec(kernel)};
 #else
+  // timeval
+  //   https://man7.org/linux/man-pages/man3/timeval.3type.html
+  //
+  //   struct timeval {
+  //       time_t       tv_sec;   /* Seconds */
+  //       suseconds_t  tv_usec;  /* Microseconds */
+  //   };
   auto to_nsec = [](struct timeval t) -> i64 {
+    // https://en.cppreference.com/w/cpp/language/integer_literal
+    //
+    // Optional single quotes (') may be inserted between the digits as a separator; they are
+    // ignored when determining the value of the literal.
     return (i64)t.tv_sec * 1'000'000'000 + t.tv_usec * 1'000;
   };
 
+  // getrusage
+  //   https://man7.org/linux/man-pages/man2/getrusage.2.html
+  //
+  // ru_utime
+  //   This is the total amount of time spent executing in user
+  //   mode, expressed in a timeval structure (seconds plus
+  //   microseconds).
+  //
+  // ru_stime
+  //   This is the total amount of time spent executing in kernel
+  //   mode, expressed in a timeval structure (seconds plus
+  //   microseconds).
   struct rusage ru;
   getrusage(RUSAGE_SELF, &ru);
   return {to_nsec(ru.ru_utime), to_nsec(ru.ru_stime)};

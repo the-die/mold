@@ -41,6 +41,8 @@ std::function<void()> fork_child() {
     int status;
     waitpid(pid, &status, 0);
 
+    // WIFEXITED, WEXITSTATUS, WIFSIGNALED, WTERMSIG
+    // https://man7.org/linux/man-pages/man2/waitpid.2.html
     if (WIFEXITED(status))
       _exit(WEXITSTATUS(status));
     if (WIFSIGNALED(status))

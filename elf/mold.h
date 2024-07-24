@@ -1832,6 +1832,12 @@ struct Context {
 
   bool has_error = false;
 
+  // tbb::concurrent_vector
+  //   https://oneapi-src.github.io/oneTBB/main/tbb_userguide/concurrent_vector_ug.html
+  //
+  // tbb::concurrent_hash_map
+  //   https://oneapi-src.github.io/oneTBB/main/tbb_userguide/concurrent_hash_map.html
+
   // Symbol table
   tbb::concurrent_hash_map<std::string_view, Symbol<E>, HashCmp> symbol_map;
   tbb::concurrent_hash_map<std::string_view, ComdatGroup, HashCmp> comdat_groups;
