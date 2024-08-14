@@ -152,6 +152,9 @@ but as `-o magic`.
 * `--no-color-diagnostics`:
   Synonym for `--color-diagnostics=never`.
 
+* `--detach`, `--no-detach:
+  Permit or do not permit mold to create a debug info file in the background.
+
 * `--fork`, `--no-fork`:
   Spawn a child process and let it do the actual linking. When linking a large
   program, the OS kernel can take a few hundred milliseconds to terminate a
@@ -198,10 +201,29 @@ but as `-o magic`.
   easily test that your program works in the reversed initialization order.
 
 * `--run` _command_ _arg_...:
-  Run _command_ with `mold` `/usr/bin/ld`. Specifically, `mold` runs a given
-  command with the `LD_PRELOAD` environment set to intercept exec(3) family
-  functions and replaces `argv[0]` with itself if it is `ld`, `ld.gold`, or
-  `ld.lld`.
+  Run _command_ with `mold` as `/usr/bin/ld`. Specifically, `mold` runs a
+  given command with the `LD_PRELOAD` environment set to intercept exec(3)
+  family functions and replaces `argv[0]` with itself if it is `ld`,
+  `ld.gold`, or `ld.lld`.
+
+* `--separate-debug-file`, `--separate-debug-file`=_file_:
+  Bundle debug info sections into a separate file instead of embedding them in
+  an output executable or a shared library. mold creates a debug info file in
+  the background by default, so that you can start running your executable as
+  soon as possible.
+
+  By default, the debug info file is created in the same directory as is the
+  output file, with the `.dbg` file extension. That filename is embedded into
+  the output file so that `gdb` can automatically find the debug info file for
+  the output file. For more info about gdb features related to separate debug
+  files, see
+  <https://sourceware.org/gdb/current/onlinedocs/gdb.html/Separate-Debug-Files.html>.
+
+  mold holds a file lock with flock(2) while creating a debug info file in the
+  background.
+
+  If you don't want to create a debug info file in the background, pass the
+  `--no-detach` option.
 
 * `--shuffle-sections`, `--shuffle-sections`=_number_:
   Randomize the output by shuffling the order of input sections before
@@ -245,6 +267,33 @@ but as `-o magic`.
 
 * `--quick-exit`, `--no-quick-exit`:
   Use or do not use `quick_exit` to exit.
+
+* `-z rewrite-endbr`, `-z norewrite-endbr`:
+  As a security measure, some CPU instruction sets have recently gained a
+  feature to protect control flow integrity by disallowing indirect branches
+  by default. If the feature is enabled, the instruction that is executed
+  immediately after an indirect branch must be an branch target marker
+  instruction, or a CPU-level fault will raise. The marker instruction is also
+  known as "landing pad" instruction, to which indirect branches can land.
+  This feature makes ROP attacks harder to conduct.
+
+  To use the feature, a function whose pointer is taken needs to begin with a
+  landing pad because a function call via a function pointer is compiled to an
+  indirect branch. On the other hand, if a function is called only directly
+  (i.e. referred to only by _direct_ branch instructions), it doesn't have to
+  begin with it.
+
+  By default, the compiler always emits a landing pad at the beginning of each
+  global function because it doesn't know whether or not the function's
+  pointer is taken in another translation unit. As a result, the resulting
+  binary has more attack surface than necessary.
+
+  If `--rewrite-endbr` is given, mold conducts a whole program analysis
+  to identify functions whose addresses are actually taken and rewrites
+  landing pads with no-ops for non-address-taken functions, reducing the
+  attack surface.
+
+  This feature is currently available only on x86-64.
 
 ## GNU-COMPATIBLE OPTIONS
 
@@ -390,6 +439,23 @@ but as `-o magic`.
   report an error for duplicate definitions and instead use the first
   definition.
 
+* `--allow-shlib-undefined`, `--no-allow-shlib-undefined`:
+  Even if mold succeeds in linking a main executable without undefined symbol
+  errors, you may still encounter symbol lookup errors at runtime because the
+  dynamic linker cannot find some symbols in shared libraries in any ELF
+  module. This occurs because mold ignores undefined symbols in shared
+  libraries by default.
+
+  If you pass `--no-allow-shlib-undefined`, mold verifies that undefined
+  symbols in shared libraries given to the linker can be resolved at
+  link-time. In other words, this converts the runtime error to a link-time
+  error.
+
+  Note that you need to pass all shared libraries, including indirectly
+  dependent ones, to the linker as arguments for `-l`. If a shared library
+  depends on a library that's not passed to the linker, the verification will
+  be skipped for that file.
+
 * `--as-needed`, `--no-as-needed`:
   By default, shared libraries given to the linker are unconditionally added
   to the list of required libraries in an output file. However, shared
@@ -401,13 +467,13 @@ but as `-o magic`.
   The `--no-as-needed` option restores the default behavior for subsequent
   files.
 
-* `--build-id`=[ `md5` | `sha1` | `sha256` | `uuid` | `0x`_hexstring_ | `none` ]:
+* `--build-id`=[ `md5` | `sha1` | `sha256` | `fast` | `uuid` | `0x`_hexstring_ | `none` ]:
   Create a `.note.gnu.build-id` section containing a byte string to uniquely
   identify an output file. `sha256` compute a 256-bit cryptographic hash of an
   output file and set it to build-id. `md5` and `sha1` compute the same hash
   but truncate it to 128 and 160 bits, respectively, before setting it to
   build-id. `uuid` sets a random 128-bit UUID. `0x`_hexstring_ sets
-  _hexstring_.
+  _hexstring_. `fast` is a synonym for `sha256`.
 
 * `--build-id`:
   Synonym for `--build-id=sha256`.
@@ -463,17 +529,22 @@ but as `-o magic`.
   `--disable-new-dtags`, `mold` emits `DT_RPATH` for `--rpath` instead.
 
 * `--execute-only`:
-  Traditionally, most processors require both executable and readable bits to
-  1 to make the page executable, which allows machine code to be read as data
-  at runtime. This is actually what an attacker often does after gaining a
-  limited control of a process to find pieces of machine code they can use to
-  gain the full control of the process. As a mitigation, some recent
-  processors allows "execute-only" pages. If a page is execute-only, you can
-  call a function there as long as you know its address but can't read it as
-  data.
 
-  This option marks text segments execute-only. This option currently works
-  only on some ARM64 processors.
+  Traditionally, setting the executable bit to 1 for a memory page implies
+  that the page also become readable, which allows machine code to be read
+  as data at runtime. That is actually what an attacker often does after
+  gaining a limited control of a process to find pieces of machine code
+  they can use to gain the full control of the process. As a mitigation,
+  recent processors including some ARM64 ones allows "execute-only" pages.
+  If a page is execute-only, you can call a function there as long as you
+  know its address but can't read it as data.
+
+  This option marks text segments as execute-only by setting just the "X"
+  bit instead of "RX". Note that on most systems, the absence of the "R"
+  bit in the text segment serves just as a hint. If you run a program
+  linked with `--execute-only` on a processor that doesn't support
+  execute-only pages, your executable will likely still function normally,
+  but the text segment will remain readable.
 
 * `--exclude-libs`=_libraries_ ...:
   Mark all symbols in the given _libraries_ hidden.
@@ -557,11 +628,6 @@ but as `-o magic`.
   Note that a runtime loader has to support `.relr.dyn` to run executables or
   shared libraries linked with `--pack-dyn-relocs=relr`. As of 2022, only
   ChromeOS, Android and Fuchsia support it.
-
-* `--package-metadata`=_string_:
-  Embed _string_ to a `.note.package` section. This option is intended to be
-  used by a package management command such as rpm(8) to embed metadata
-  regarding a package to each executable file.
 
 * `--pie`, `--pic-executable`, `--no-pie`, `--no-pic-executable`:
   Create a position-independent executable.
@@ -809,7 +875,7 @@ but as `-o magic`.
 * `-z interpose`:
   Mark object to interpose all DSOs but executable.
 
-* `-(`, `-)`, `-EL`, `-O`_number_, `--allow-shlib-undefined`, `--dc`, `--dp`, `--end-group`, `--no-add-needed`, `--no-allow-shlib-undefined`, `--no-copy-dt-needed-entries`, `--nostdlib`, `--rpath-link=Ar dir`, `--sort-common`, `--sort-section`, `--start-group`, `--warn-constructors`, `--warn-once`, `--fix-cortex-a53-835769`, `--fix-cortex-a53-843419`, `-z combreloc`, `-z common-page-size`, `-z nocombreloc`:
+* `-(`, `-)`, `-EL`, `-O`_number_, `--dc`, `--dp`, `--end-group`, `--no-add-needed`, `--no-copy-dt-needed-entries`, `--nostdlib`, `--rpath-link=Ar dir`, `--sort-common`, `--sort-section`, `--start-group`, `--warn-constructors`, `--warn-once`, `--fix-cortex-a53-835769`, `--fix-cortex-a53-843419`, `-z combreloc`, `-z common-page-size`, `-z nocombreloc`:
   Ignored
 
 ## ENVIRONMENT VARIABLES
@@ -831,6 +897,8 @@ but as `-o magic`.
   some of them often get killed due to out-of-memory errors, you might
   consider setting this environment variable to `1` to see if it addresses the
   OOM issue.
+
+  Currently, any value other than `1` is silently ignored.
 
 * `MOLD_DEBUG`:
   If this variable is set to a non-empty string, `mold` embeds its

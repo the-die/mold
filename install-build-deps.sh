@@ -27,7 +27,7 @@ opensuse-tumbleweed-*)
   ;;
 gentoo-*)
   emerge-webrsync
-  emerge dev-build/cmake
+  FEATURES='getbinpkg binpkg-request-signature' emerge dev-build/cmake
   ;;
 arch-* | archarm-* | artix-* | endeavouros-*)
   pacman -Sy --needed --noconfirm base-devel cmake util-linux
@@ -42,6 +42,9 @@ alpine-*)
 clear-linux-*)
   swupd update
   swupd bundle-add c-basic diffutils
+  ;;
+almalinux-*)
+  dnf install -y gcc-toolset-13-gcc-c++ gcc-toolset-13-libstdc++-devel cmake diffutils
   ;;
 *)
   echo "Error: don't know anything about build dependencies on $ID-$VERSION_ID"

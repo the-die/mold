@@ -1,9 +1,7 @@
 name: CI
 on:
   push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
 env:
   UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
 jobs:
@@ -13,7 +11,6 @@ jobs:
         target:
         # Disable PCH for the default configuration. This prevents relying on implicit includes.
         - '-DCMAKE_DISABLE_PRECOMPILE_HEADERS=On'
-        - '-DMOLD_USE_ASAN=On'
         - '-DMOLD_USE_TSAN=On'
     runs-on: ubuntu-20.04
     steps:
@@ -72,21 +69,22 @@ jobs:
 
         # Install a LoongArch toolchain
         mkdir /larch
-        wget -O- -q https://github.com/loongson/build-tools/releases/download/2023.08.08/CLFS-loongarch64-8.1-x86_64-cross-tools-gcc-glibc.tar.xz | tar -C /larch --strip-components=1 --xz -xf -
+        wget -O- -q https://github.com/loongson/build-tools/releases/download/2024.08.08/x86_64-cross-tools-loongarch64-binutils_2.43-gcc_14.2.0-glibc_2.40.tar.xz | tar -C /larch --strip-components=1 --xz -xf -
 
+        cp -r /larch/loongarch64-unknown-linux-gnu/lib/* /larch/target/lib64
         ln -sf /larch/target /usr/loongarch64-linux-gnu
-        cp -r /larch/loongarch64-unknown-linux-gnu/lib/* /usr/loongarch64-linux-gnu/lib64/
 
-        for i in objdump objcopy strip; do
+        for i in gcc g++ objdump objcopy strip; do
           ln -sf /larch/bin/loongarch64-unknown-linux-gnu-$i /usr/bin/loongarch64-linux-gnu-$i
         done
 
-        echo '/larch/bin/loongarch64-unknown-linux-gnu-gcc -L/larch/loongarch64-unknown-linux-gnu "$@"' > /usr/bin/loongarch64-linux-gnu-gcc
-        echo '/larch/bin/loongarch64-unknown-linux-gnu-g++ -L/larch/loongarch64-unknown-linux-gnu "$@"' > /usr/bin/loongarch64-linux-gnu-g++
-        chmod 755 /usr/bin/loongarch64-linux-gnu-{gcc,g++}
-
         wget -O /usr/local/bin/qemu-loongarch64 -q https://github.com/loongson/build-tools/releases/download/2023.08.08/qemu-loongarch64
         chmod 755 /usr/local/bin/qemu-loongarch64
+
+        # Install Intel SDE CPU emulator for CET-related tests
+        mkdir /sde
+        wget -O- -q https://downloadmirror.intel.com/813591/sde-external-9.33.0-2024-01-07-lin.tar.xz | tar -C /sde --strip-components=1 --xz -xf -
+        ln -s /sde/sde /usr/bin
     - name: ccache
       uses: hendrikmuhs/ccache-action@v1
     - name: build
@@ -109,8 +107,33 @@ jobs:
           build
           !build/CMakeFiles
 
+  build-distros:
+    strategy:
+      matrix:
+        distro:
+        - alpine
+        - archlinux
+        - fedora
+        - gentoo/stage3
+        - opensuse/tumbleweed
+    runs-on: ubuntu-latest
+    container: ${{ matrix.distro }}
+    steps:
+    - uses: actions/checkout@v2
+    - run: ./install-build-deps.sh
+    - name: build
+      run: |
+        mkdir build
+        cd build
+        cmake ..
+        cmake --build . -j$(nproc)
+    - name: test
+      run: |
+        cd build
+        ctest -j$(nproc)
+
   build-macos:
-    runs-on: macos-11
+    runs-on: macos-12
     strategy:
       matrix:
         target:
