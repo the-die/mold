@@ -25,20 +25,18 @@ static u32 elf_hash(std::string_view name) {
 }
 
 template <typename E>
-OutputSection<E> *find_section(Context<E> &ctx, u32 sh_type) {
+Chunk<E> *find_chunk(Context<E> &ctx, u32 sh_type) {
   for (Chunk<E> *chunk : ctx.chunks)
-    if (OutputSection<E> *osec = chunk->to_osec())
-      if (osec->shdr.sh_type == sh_type)
-        return osec;
+    if (chunk->shdr.sh_type == sh_type)
+      return chunk;
   return nullptr;
 }
 
 template <typename E>
-OutputSection<E> *find_section(Context<E> &ctx, std::string_view name) {
+Chunk<E> *find_chunk(Context<E> &ctx, std::string_view name) {
   for (Chunk<E> *chunk : ctx.chunks)
-    if (OutputSection<E> *osec = chunk->to_osec())
-      if (osec->name == name)
-        return osec;
+    if (chunk->name == name)
+      return chunk;
   return nullptr;
 }
 
@@ -155,10 +153,17 @@ static std::vector<ElfPhdr<E>> create_phdr(Context<E> &ctx) {
     phdr.p_type = type;
     phdr.p_flags = flags;
     phdr.p_align = chunk->shdr.sh_addralign;
-    phdr.p_offset = chunk->shdr.sh_offset;
 
-    if (chunk->shdr.sh_type != SHT_NOBITS)
+    if (chunk->shdr.sh_type == SHT_NOBITS) {
+      // p_offset indicates the in-file start offset and is not
+      // significant for segments with zero on-file size. We still want to
+      // keep it congruent with the virtual address modulo page size
+      // because some loaders (at least FreeBSD's) are picky about it.
+      phdr.p_offset = chunk->shdr.sh_addr % ctx.page_size;
+    } else {
+      phdr.p_offset = chunk->shdr.sh_offset;
       phdr.p_filesz = chunk->shdr.sh_size;
+    }
 
     phdr.p_vaddr = chunk->shdr.sh_addr;
     phdr.p_paddr = chunk->shdr.sh_addr;
@@ -267,6 +272,10 @@ static std::vector<ElfPhdr<E>> create_phdr(Context<E> &ctx) {
   if (ctx.eh_frame_hdr)
     define(PT_GNU_EH_FRAME, PF_R, ctx.eh_frame_hdr);
 
+  // Add PT_GNU_PROPERTY
+  if (Chunk<E> *chunk = find_chunk(ctx, ".note.gnu.property"))
+    define(PT_GNU_PROPERTY, PF_R, chunk);
+
   // Add PT_GNU_STACK, which is a marker segment that doesn't really
   // contain any segments. It controls executable bit of stack area.
   {
@@ -293,8 +302,8 @@ static std::vector<ElfPhdr<E>> create_phdr(Context<E> &ctx) {
 
   // Create a PT_ARM_EDXIDX
   if constexpr (is_arm32<E>)
-    if (OutputSection<E> *osec = find_section(ctx, SHT_ARM_EXIDX))
-      define(PT_ARM_EXIDX, PF_R, osec);
+    if (ctx.extra.exidx)
+      define(PT_ARM_EXIDX, PF_R, ctx.extra.exidx);
 
   // Create a PT_RISCV_ATTRIBUTES
   if constexpr (is_riscv<E>)
@@ -395,11 +404,6 @@ void RelDynSection<E>::update_shdr(Context<E> &ctx) {
     offset += chunk->get_reldyn_size(ctx) * sizeof(ElfRel<E>);
   }
 
-  for (ObjectFile<E> *file : ctx.objs) {
-    file->reldyn_offset = offset;
-    offset += file->num_dynrel * sizeof(ElfRel<E>);
-  }
-
   this->shdr.sh_size = offset;
   this->shdr.sh_link = ctx.dynsym->shndx;
 }
@@ -447,8 +451,6 @@ void RelDynSection<E>::sort(Context<E> &ctx) {
 
 template <typename E>
 void RelrDynSection<E>::update_shdr(Context<E> &ctx) {
-  this->shdr.sh_link = ctx.dynsym->shndx;
-
   i64 n = 0;
   for (Chunk<E> *chunk : ctx.chunks)
     n += chunk->relr.size();
@@ -473,7 +475,7 @@ void StrtabSection<E>::update_shdr(Context<E> &ctx) {
   // affect correctness of the program but helps disassembler to
   // disassemble machine code appropriately.
   if constexpr (is_arm32<E>)
-    if (!ctx.arg.strip_all && !ctx.arg.retain_symbols_file)
+    if (!ctx.arg.strip_all)
       offset += sizeof("$a\0$t\0$d");
 
   for (Chunk<E> *chunk : ctx.chunks) {
@@ -500,7 +502,7 @@ void StrtabSection<E>::copy_buf(Context<E> &ctx) {
   buf[0] = '\0';
 
   if constexpr (is_arm32<E>)
-    if (!ctx.arg.strip_all && !ctx.arg.retain_symbols_file)
+    if (!ctx.arg.strip_all)
       memcpy(buf + 1, "$a\0$t\0$d", 9);
 }
 
@@ -670,6 +672,15 @@ static bool contains_variant_pcs(Context<ARM64> &ctx) {
   return false;
 }
 
+// RISC-V has the same feature but with different names.
+template <is_riscv E>
+static bool contains_variant_cc(Context<E> &ctx) {
+  for (Symbol<E> *sym : ctx.plt->symbols)
+    if (sym->esym().riscv_variant_cc)
+      return true;
+  return false;
+}
+
 template <typename E>
 static std::vector<Word<E>> create_dynamic_section(Context<E> &ctx) {
   std::vector<Word<E>> vec;
@@ -734,19 +745,19 @@ static std::vector<Word<E>> create_dynamic_section(Context<E> &ctx) {
     define(DT_STRSZ, ctx.dynstr->shdr.sh_size);
   }
 
-  if (find_section(ctx, SHT_INIT_ARRAY)) {
+  if (find_chunk(ctx, SHT_INIT_ARRAY)) {
     define(DT_INIT_ARRAY, ctx.__init_array_start->value);
     define(DT_INIT_ARRAYSZ,
            ctx.__init_array_end->value - ctx.__init_array_start->value);
   }
 
-  if (find_section(ctx, SHT_PREINIT_ARRAY)) {
+  if (find_chunk(ctx, SHT_PREINIT_ARRAY)) {
     define(DT_PREINIT_ARRAY, ctx.__preinit_array_start->value);
     define(DT_PREINIT_ARRAYSZ,
            ctx.__preinit_array_end->value - ctx.__preinit_array_start->value);
   }
 
-  if (find_section(ctx, SHT_FINI_ARRAY)) {
+  if (find_chunk(ctx, SHT_FINI_ARRAY)) {
     define(DT_FINI_ARRAY, ctx.__fini_array_start->value);
     define(DT_FINI_ARRAYSZ,
            ctx.__fini_array_end->value - ctx.__fini_array_start->value);
@@ -821,7 +832,11 @@ static std::vector<Word<E>> create_dynamic_section(Context<E> &ctx) {
 
   if constexpr (is_arm64<E>)
     if (contains_variant_pcs(ctx))
-      define(DT_AARCH64_VARIANT_PCS, 1);
+      define(DT_AARCH64_VARIANT_PCS, 0);
+
+  if constexpr (is_riscv<E>)
+    if (contains_variant_cc(ctx))
+      define(DT_RISCV_VARIANT_CC, 0);
 
   if constexpr (is_ppc32<E>)
     define(DT_PPC_GOT, ctx.gotplt->shdr.sh_addr);
@@ -942,14 +957,20 @@ void OutputSection<E>::compute_section_size(Context<E> &ctx) {
 
 template <typename E>
 void OutputSection<E>::copy_buf(Context<E> &ctx) {
-  if (this->shdr.sh_type != SHT_NOBITS)
-    write_to(ctx, ctx.buf + this->shdr.sh_offset);
+  if (this->shdr.sh_type != SHT_NOBITS) {
+    ElfRel<E> *rel = nullptr;
+    if (ctx.reldyn)
+      rel = (ElfRel<E> *)(ctx.buf + ctx.reldyn->shdr.sh_offset +
+                          this->reldyn_offset);
+
+    write_to(ctx, ctx.buf + this->shdr.sh_offset, rel);
+  }
 }
 
 template <typename E>
-void OutputSection<E>::write_to(Context<E> &ctx, u8 *buf) {
+void OutputSection<E>::write_to(Context<E> &ctx, u8 *buf, ElfRel<E> *rel) {
+  // Copy section contents to an output file.
   tbb::parallel_for((i64)0, (i64)members.size(), [&](i64 i) {
-    // Copy section contents to an output file.
     InputSection<E> &isec = *members[i];
     isec.write_to(ctx, buf + isec.offset);
 
@@ -974,10 +995,45 @@ void OutputSection<E>::write_to(Context<E> &ctx, u8 *buf) {
     }
   });
 
+  // Emit range extension thunks.
   if constexpr (needs_thunk<E>) {
     tbb::parallel_for_each(thunks, [&](std::unique_ptr<Thunk<E>> &thunk) {
       thunk->copy_buf(ctx);
     });
+  }
+
+  // Emit dynamic relocations.
+  for (AbsRel<E> &r : abs_rels) {
+    Word<E> *loc = (Word<E> *)(buf + r.isec->offset + r.offset);
+    u64 addr = this->shdr.sh_addr + r.isec->offset + r.offset;
+    Symbol<E> &sym = *r.sym;
+
+    switch (r.kind) {
+    case ABS_REL_NONE:
+    case ABS_REL_RELR:
+      *loc = sym.get_addr(ctx) + r.addend;
+      break;
+    case ABS_REL_BASEREL: {
+      u64 val = sym.get_addr(ctx) + r.addend;
+      *rel++ = ElfRel<E>(addr, E::R_RELATIVE, 0, val);
+      if (ctx.arg.apply_dynamic_relocs)
+        *loc = val;
+      break;
+    }
+    case ABS_REL_IFUNC:
+      if constexpr (supports_ifunc<E>) {
+        u64 val = sym.get_addr(ctx, NO_PLT) + r.addend;
+        *rel++ = ElfRel<E>(addr, E::R_IRELATIVE, 0, val);
+        if (ctx.arg.apply_dynamic_relocs)
+          *loc = val;
+      }
+      break;
+    case ABS_REL_DYNREL:
+      *rel++ = ElfRel<E>(addr, E::R_ABS, sym.get_dynsym_idx(ctx), r.addend);
+      if (ctx.arg.apply_dynamic_relocs)
+        *loc = r.addend;
+      break;
+    }
   }
 }
 
@@ -1030,35 +1086,92 @@ static std::vector<u64> encode_relr(std::span<u64> pos) {
 }
 
 template <typename E>
-void OutputSection<E>::construct_relr(Context<E> &ctx) {
-  if (!ctx.arg.pic)
-    return;
-  if (!(this->shdr.sh_flags & SHF_ALLOC))
-    return;
-  if (this->shdr.sh_addralign % sizeof(Word<E>))
-    return;
+static AbsRelKind get_abs_rel_kind(Context<E> &ctx, Symbol<E> &sym) {
+  if (sym.is_ifunc())
+    return sym.is_pde_ifunc(ctx) ? ABS_REL_NONE : ABS_REL_IFUNC;
 
-  // Skip it if it is a text section because .text doesn't usually
-  // contain any dynamic relocations.
-  if (this->shdr.sh_flags & SHF_EXECINSTR)
-    return;
+  if (sym.is_absolute())
+    return ABS_REL_NONE;
 
-  // Collect base relocations
-  std::vector<std::vector<u64>> shards(members.size());
+  // True if the symbol's address is in the output file.
+  if (!sym.is_imported || (sym.flags & NEEDS_CPLT) || (sym.flags & NEEDS_COPYREL))
+    return ctx.arg.pic ? ABS_REL_BASEREL : ABS_REL_NONE;
 
+  return ABS_REL_DYNREL;
+}
+
+// Scan word-size absolute relocations (e.g. R_X86_64_64). This is
+// separated from scan_relocations() because only such relocations can
+// be promoted to dynamic relocations.
+template <typename E>
+void OutputSection<E>::scan_abs_relocations(Context<E> &ctx) {
+  std::vector<std::vector<AbsRel<E>>> shards(members.size());
+
+  // Collect all word-size absolute relocations
   tbb::parallel_for((i64)0, (i64)members.size(), [&](i64 i) {
-    InputSection<E> &isec = *members[i];
-
-    if (isec.shdr().sh_addralign % sizeof(Word<E>) == 0)
-      for (const ElfRel<E> &r : isec.get_rels(ctx))
-        if (r.r_type == E::R_ABS && r.r_offset % sizeof(Word<E>) == 0)
-          if (Symbol<E> &sym = *isec.file.symbols[r.r_sym];
-              !sym.is_ifunc() && !sym.is_absolute() && !sym.is_imported)
-            shards[i].push_back(isec.offset + r.r_offset);
+    InputSection<E> *isec = members[i];
+    for (const ElfRel<E> &r : isec->get_rels(ctx))
+      if (r.r_type == E::R_ABS)
+        shards[i].push_back(AbsRel<E>{isec, r.r_offset, isec->file.symbols[r.r_sym],
+                                      get_addend(*isec, r)});
   });
 
-  // Compress them
-  std::vector<u64> pos = flatten(shards);
+  abs_rels = flatten(shards);
+
+  // We can sometimes avoid creating dynamic relocations in read-only
+  // sections by promoting symbols to canonical PLT or copy relocations.
+  if (!ctx.arg.pic && !(this->shdr.sh_flags & SHF_WRITE))
+    for (AbsRel<E> &r : abs_rels)
+      if (Symbol<E> &sym = *r.sym;
+          sym.is_imported && !sym.is_absolute())
+        sym.flags |= (sym.get_type() == STT_FUNC) ? NEEDS_CPLT : NEEDS_COPYREL;
+
+  // Now we can compute whether they need to be promoted to dynamic
+  // relocations or not.
+  for (AbsRel<E> &r : abs_rels)
+    r.kind = get_abs_rel_kind(ctx, *r.sym);
+
+  // If we have a relocation against a read-only section, we need to
+  // set the DT_TEXTREL flag for the loader.
+  for (AbsRel<E> &r : abs_rels) {
+    if (r.kind != ABS_REL_NONE && !(r.isec->shdr().sh_flags & SHF_WRITE)) {
+      if (ctx.arg.z_text) {
+        Error(ctx) << *r.isec << ": relocation at offset 0x"
+                   << std::hex << r.offset << " against symbol `"
+                   << *r.sym << "' can not be used; recompile with -fPIC";
+      } else if (ctx.arg.warn_textrel) {
+        Warn(ctx) << *r.isec << ": relocation against symbol `" << *r.sym
+                  << "' in read-only section";
+      }
+      ctx.has_textrel = true;
+    }
+  }
+
+  // If --pack-dyn-relocs=relr is enabled, base relocations are put into
+  // .relr.dyn.
+  if (ctx.arg.pack_dyn_relocs_relr)
+    for (AbsRel<E> &r : abs_rels)
+      if (r.kind == ABS_REL_BASEREL &&
+          r.isec->shdr().sh_addralign % sizeof(Word<E>) == 0 &&
+          r.offset % sizeof(Word<E>) == 0)
+        r.kind = ABS_REL_RELR;
+}
+
+template <typename E>
+i64 OutputSection<E>::get_reldyn_size(Context<E> &ctx) const {
+  i64 n = 0;
+  for (const AbsRel<E> &r : abs_rels)
+    if (r.kind != ABS_REL_NONE && r.kind != ABS_REL_RELR)
+      n++;
+  return n;
+}
+
+template <typename E>
+void OutputSection<E>::construct_relr(Context<E> &ctx) {
+  std::vector<u64> pos;
+  for (const AbsRel<E> &r : abs_rels)
+    if (r.kind == ABS_REL_RELR)
+      pos.push_back(r.isec->offset + r.offset);
   this->relr = encode_relr<E>(pos);
 }
 
@@ -1379,13 +1492,10 @@ void GotSection<E>::copy_buf(Context<E> &ctx) {
 
 template <typename E>
 void GotSection<E>::construct_relr(Context<E> &ctx) {
-  assert(ctx.arg.pack_dyn_relocs_relr);
-
   std::vector<u64> pos;
   for (GotEntry<E> &ent : get_got_entries(ctx))
     if (ent.is_relr(ctx))
       pos.push_back(ent.idx * sizeof(Word<E>));
-
   this->relr = encode_relr<E>(pos);
 }
 
@@ -1669,11 +1779,11 @@ ElfSym<E> to_output_esym(Context<E> &ctx, Symbol<E> &sym, u32 st_name,
   if constexpr (is_arm64<E>)
     esym.arm64_variant_pcs = sym.esym().arm64_variant_pcs;
 
-  if constexpr (is_ppc64v2<E>)
-    esym.ppc_local_entry = sym.esym().ppc_local_entry;
+  if constexpr (is_riscv<E>)
+    esym.riscv_variant_cc = sym.esym().riscv_variant_cc;
 
-  if constexpr (is_alpha<E>)
-    esym.alpha_st_other = sym.esym().alpha_st_other;
+  if constexpr (is_ppc64v2<E>)
+    esym.ppc64_local_entry = sym.esym().ppc64_local_entry;
 
   auto get_st_shndx = [&](Symbol<E> &sym) -> u32 {
     if (SectionFragment<E> *frag = sym.get_frag())
@@ -2095,11 +2205,11 @@ void MergedSection<E>::compute_section_size(Context<E> &ctx) {
 
 template <typename E>
 void MergedSection<E>::copy_buf(Context<E> &ctx) {
-  write_to(ctx, ctx.buf + this->shdr.sh_offset);
+  write_to(ctx, ctx.buf + this->shdr.sh_offset, nullptr);
 }
 
 template <typename E>
-void MergedSection<E>::write_to(Context<E> &ctx, u8 *buf) {
+void MergedSection<E>::write_to(Context<E> &ctx, u8 *buf, ElfRel<E> *rel) {
   i64 shard_size = map.nbuckets / map.NUM_SHARDS;
 
   tbb::parallel_for((i64)0, map.NUM_SHARDS, [&](i64 i) {
@@ -2363,6 +2473,16 @@ void CopyrelSection<E>::add_symbol(Context<E> &ctx, Symbol<E> *sym) {
 
   assert(!ctx.arg.shared);
   assert(sym->file->is_dso);
+
+  if (sym->esym().st_visibility == STV_PROTECTED)
+    Error(ctx) << *sym->file
+               << ": cannot create a copy relocation for protected symbol '"
+               << *sym << "'; recompile with -fPIC";
+
+  if (!ctx.arg.z_copyreloc)
+    Error(ctx) << "-z nocopyreloc: " << *sym->file
+               << ": cannot create a copy relocation for symbol '" << *sym
+               << "'; recompile with -fPIC";
 
   symbols.push_back(sym);
 
@@ -2737,7 +2857,7 @@ CompressedSection<E>::CompressedSection(Context<E> &ctx, Chunk<E> &chunk) {
   this->uncompressed_data.resize(chunk.shdr.sh_size);
   u8 *buf = this->uncompressed_data.data();
 
-  chunk.write_to(ctx, buf);
+  chunk.write_to(ctx, buf, nullptr);
 
   switch (ctx.arg.compress_debug_sections) {
   case COMPRESS_ZLIB:
@@ -2853,10 +2973,6 @@ void RelocSection<E>::copy_buf(Context<E> &ctx) {
     i64 addend;
     std::tie(symidx, addend) = get_symidx_addend(isec, rel);
 
-    if constexpr (is_alpha<E>)
-      if (rel.r_type == R_ALPHA_GPDISP || rel.r_type == R_ALPHA_LITUSE)
-        addend = rel.r_addend;
-
     i64 r_offset = isec.output_section->shdr.sh_addr + isec.offset + rel.r_offset;
     out = ElfRel<E>(r_offset, rel.r_type, symidx, addend);
 
@@ -2949,8 +3065,8 @@ template class RelocSection<E>;
 template class ComdatGroupSection<E>;
 template class GnuDebuglinkSection<E>;
 
-template OutputSection<E> *find_section(Context<E> &, u32);
-template OutputSection<E> *find_section(Context<E> &, std::string_view);
+template Chunk<E> *find_chunk(Context<E> &, u32);
+template Chunk<E> *find_chunk(Context<E> &, std::string_view);
 template i64 to_phdr_flags(Context<E> &ctx, Chunk<E> *chunk);
 template ElfSym<E> to_output_esym(Context<E> &, Symbol<E> &, u32, U32<E> *);
 

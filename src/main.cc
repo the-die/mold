@@ -1,6 +1,5 @@
 #include "mold.h"
 #include "../lib/archive-file.h"
-#include "../lib/output-file.h"
 
 #include <cstring>
 #include <functional>
@@ -30,85 +29,6 @@ int main(int argc, char **argv) {
 
 namespace mold {
 
-// return machine type name
-// Read the beginning of a given file and returns its machine type
-// (e.g. EM_X86_64 or EM_386).
-template <typename E>
-std::string_view
-get_machine_type(Context<E> &ctx, ReaderContext &rctx, MappedFile *mf) {
-  auto get_elf_type = [&](u8 *buf) -> std::string_view {
-    bool is_le = (((ElfEhdr<I386> *)buf)->e_ident[EI_DATA] == ELFDATA2LSB);
-    bool is_64;
-    u32 e_machine;
-
-    if (is_le) {
-      auto &ehdr = *(ElfEhdr<I386> *)buf; // little endian
-      is_64 = (ehdr.e_ident[EI_CLASS] == ELFCLASS64);
-      e_machine = ehdr.e_machine;
-    } else {
-      auto &ehdr = *(ElfEhdr<M68K> *)buf; // big endian
-      is_64 = (ehdr.e_ident[EI_CLASS] == ELFCLASS64);
-      e_machine = ehdr.e_machine;
-    }
-
-    switch (e_machine) {
-    case EM_386:
-      return I386::target_name;
-    case EM_X86_64:
-      return X86_64::target_name;
-    case EM_ARM:
-      return ARM32::target_name;
-    case EM_AARCH64:
-      return ARM64::target_name;
-    case EM_RISCV:
-      if (is_le)
-        return is_64 ? RV64LE::target_name : RV32LE::target_name;
-      return is_64 ? RV64BE::target_name : RV32BE::target_name;
-    case EM_PPC:
-      return PPC32::target_name;
-    case EM_PPC64:
-      return is_le ? PPC64V2::target_name : PPC64V1::target_name;
-    case EM_S390X:
-      return S390X::target_name;
-    case EM_SPARC64:
-      return SPARC64::target_name;
-    case EM_68K:
-      return M68K::target_name;
-    case EM_SH:
-      return SH4::target_name;
-    case EM_ALPHA:
-      return ALPHA::target_name;
-    case EM_LOONGARCH:
-      return is_64 ? LOONGARCH64::target_name : LOONGARCH32::target_name;
-    default:
-      return "";
-    }
-  };
-
-  switch (get_file_type(ctx, mf)) {
-  case FileType::ELF_OBJ:
-  case FileType::ELF_DSO:
-  case FileType::GCC_LTO_OBJ:
-    return get_elf_type(mf->data);
-  case FileType::AR:
-    for (MappedFile *child : read_fat_archive_members(ctx, mf))
-      if (FileType ty = get_file_type(ctx, child);
-          ty == FileType::ELF_OBJ || ty == FileType::GCC_LTO_OBJ)
-        return get_elf_type(child->data);
-    return "";
-  case FileType::THIN_AR:
-    for (MappedFile *child : read_thin_archive_members(ctx, mf))
-      if (FileType ty = get_file_type(ctx, child);
-          ty == FileType::ELF_OBJ || ty == FileType::GCC_LTO_OBJ)
-        return get_elf_type(child->data);
-    return "";
-  case FileType::TEXT:
-    return Script(ctx, rctx, mf).get_script_output_type();
-  default:
-    return "";
-  }
-}
-
 // -m target: Choose a target.
 //
 // -m emulation
@@ -137,8 +57,11 @@ static ObjectFile<E> *new_object_file(Context<E> &ctx, ReaderContext &rctx,
   check_file_compatibility(ctx, rctx, mf);
 
   bool in_lib = rctx.in_lib || (!archive_name.empty() && !rctx.whole_archive);
-  ObjectFile<E> *file = ObjectFile<E>::create(ctx, mf, archive_name, in_lib);
+
+  ObjectFile<E> *file = new ObjectFile<E>(ctx, mf, archive_name, in_lib);
+  ctx.obj_pool.emplace_back(file);
   file->priority = ctx.file_priority++;
+
   // https://oneapi-src.github.io/oneTBB/main/reference/task_group_extensions.html
   rctx.tg->run([file, &ctx] { file->parse(ctx); });
   if (ctx.arg.trace)
@@ -170,9 +93,11 @@ static SharedFile<E> *
 new_shared_file(Context<E> &ctx, ReaderContext &rctx, MappedFile *mf) {
   check_file_compatibility(ctx, rctx, mf);
 
-  SharedFile<E> *file = SharedFile<E>::create(ctx, mf);
+  SharedFile<E> *file = new SharedFile<E>(ctx, mf);
+  ctx.dso_pool.emplace_back(file);
   file->priority = ctx.file_priority++;
   file->is_alive = !rctx.as_needed;
+
   rctx.tg->run([file, &ctx] { file->parse(ctx); });
   if (ctx.arg.trace)
     Out(ctx) << "trace: " << *file;
@@ -266,7 +191,7 @@ MappedFile *open_library(Context<E> &ctx, ReaderContext &rctx, std::string path)
     return nullptr;
 
   std::string_view target = get_machine_type(ctx, rctx, mf);
-  if (!target.empty() && target != E::target_name) {
+  if (!target.empty() && target != E::name) {
     Warn(ctx) << path << ": skipping incompatible file: " << target
               << " (e_machine " << (int)E::e_machine << ")";
     return nullptr;
@@ -400,6 +325,14 @@ static void read_input_files(Context<E> &ctx, std::span<std::string> args) {
 }
 
 template <typename E>
+static bool has_lto_obj(Context<E> &ctx) {
+  for (ObjectFile<E> *file : ctx.objs)
+    if (file->is_alive && (file->is_lto_obj || file->is_gcc_offload_obj))
+      return true;
+  return false;
+}
+
+template <typename E>
 int mold_main(int argc, char **argv) {
   Context<E> ctx;
 
@@ -435,7 +368,7 @@ int mold_main(int argc, char **argv) {
 
   // Redo if -m is not x86-64.
   if constexpr (is_x86_64<E>)
-    if (ctx.arg.emulation != X86_64::target_name)
+    if (ctx.arg.emulation != X86_64::name)
       return redo_main(ctx, argc, argv);
 
   Timer t_all(ctx, "all");
@@ -464,8 +397,8 @@ int mold_main(int argc, char **argv) {
 
   // Handle --retain-symbols-file options if any.
   if (ctx.arg.retain_symbols_file)
-    for (std::string_view name : *ctx.arg.retain_symbols_file)
-      get_symbol(ctx, name)->write_to_symtab = true;
+    for (Symbol<E> *sym : *ctx.arg.retain_symbols_file)
+      sym->write_to_symtab = true;
 
   for (std::string_view arg : ctx.arg.trace_symbol)
     get_symbol(ctx, arg)->is_traced = true;
@@ -491,20 +424,23 @@ int mold_main(int argc, char **argv) {
   if (!ctx.arg.relocatable)
     create_internal_file(ctx);
 
-  // resolve_symbols is 4 things in 1 phase:
-  //
-  // - Determine the set of object files to extract from archives.
-  // - Remove redundant COMDAT sections (e.g. duplicate inline functions).
-  // - Finally, the actual symbol resolution.
-  // - LTO, which requires preliminary symbol resolution before running
-  //   and a follow-up re-resolution after the LTO objects are emitted.
-  //
-  // These passes have complex interactions, and unfortunately has to be
-  // put together in a single phase.
+  // Resolve symbols by choosing the most appropriate file for each
+  // symbol. This pass also removes redundant comdat sections (e.g.
+  // duplicate inline functions).
   resolve_symbols(ctx);
 
-  // "Kill" .eh_frame input sections after symbol resolution.
-  kill_eh_frame_sections(ctx);
+  // If there's an object file compiled with -flto, do link-time
+  // optimization.
+  if (has_lto_obj(ctx))
+    do_lto(ctx);
+
+  // Now that we know which object files are to be included to the
+  // final output, we can remove unnecessary files.
+  std::erase_if(ctx.objs, [](InputFile<E> *file) { return !file->is_alive; });
+  std::erase_if(ctx.dsos, [](InputFile<E> *file) { return !file->is_alive; });
+
+  // Parse .eh_frame section contents.
+  parse_eh_frame_sections(ctx);
 
   // Split mergeable section contents into section pieces.
   create_merged_sections(ctx);
@@ -559,6 +495,10 @@ int mold_main(int argc, char **argv) {
 
   // Bin input sections into output sections.
   create_output_sections(ctx);
+
+  // Convert an .ARM.exidx to a synthetic section.
+  if constexpr (is_arm32<E>)
+    create_arm_exidx_section(ctx);
 
   // Handle --section-align options.
   if (!ctx.arg.section_align.empty())
@@ -676,7 +616,8 @@ int mold_main(int argc, char **argv) {
   ctx.verneed->construct(ctx);
 
   // Compute .symtab and .strtab sizes for each file.
-  create_output_symtab(ctx);
+  if (!ctx.arg.strip_all)
+    create_output_symtab(ctx);
 
   // .eh_frame is a special section from the linker's point of view,
   // as its contents are parsed and reconstructed by the linker,
@@ -699,8 +640,17 @@ int mold_main(int argc, char **argv) {
   // that they can jump to anywhere in ±2 GiB by default. They may
   // be replaced with shorter instruction sequences if destinations
   // are close enough. Do this optimization.
-  if constexpr (is_riscv<E> || is_loongarch<E>)
-    filesize = shrink_sections(ctx);
+  if constexpr (is_riscv<E> || is_loongarch<E>) {
+    shrink_sections(ctx);
+    filesize = set_osec_offsets(ctx);
+  }
+
+  if constexpr (is_arm32<E>) {
+    if (ctx.extra.exidx) {
+      ctx.extra.exidx->remove_duplicate_entries(ctx);
+      filesize = set_osec_offsets(ctx);
+    }
+  }
 
   // At this point, memory layout is fixed.
 
@@ -712,16 +662,17 @@ int mold_main(int argc, char **argv) {
 
   // If --compress-debug-sections is given, compress .debug_* sections
   // using zlib.
-  if (ctx.arg.compress_debug_sections != COMPRESS_NONE)
-    filesize = compress_debug_sections(ctx);
+  if (ctx.arg.compress_debug_sections != COMPRESS_NONE) {
+    compress_debug_sections(ctx);
+    filesize = set_osec_offsets(ctx);
+  }
 
   // At this point, both memory and file layouts are fixed.
 
   t_before_copy.stop();
 
   // Create an output file
-  ctx.output_file =
-    OutputFile<Context<E>>::open(ctx, ctx.arg.output, filesize, 0777);
+  ctx.output_file = OutputFile<E>::open(ctx, ctx.arg.output, filesize, 0777);
   ctx.buf = ctx.output_file->buf;
 
   Timer t_copy(ctx, "copy");

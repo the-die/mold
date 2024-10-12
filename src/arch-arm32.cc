@@ -46,7 +46,6 @@ i64 get_addend(u8 *loc, const ElfRel<E> &rel) {
   switch (rel.r_type) {
   case R_ARM_ABS32:
   case R_ARM_REL32:
-  case R_ARM_TARGET1:
   case R_ARM_BASE_PREL:
   case R_ARM_GOTOFF32:
   case R_ARM_GOT_PREL:
@@ -145,7 +144,6 @@ void write_addend(u8 *loc, i64 val, const ElfRel<E> &rel) {
     break;
   case R_ARM_ABS32:
   case R_ARM_REL32:
-  case R_ARM_TARGET1:
   case R_ARM_BASE_PREL:
   case R_ARM_GOTOFF32:
   case R_ARM_GOT_PREL:
@@ -256,11 +254,6 @@ template <>
 void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
   std::span<const ElfRel<E>> rels = get_rels(ctx);
 
-  ElfRel<E> *dynrel = nullptr;
-  if (ctx.reldyn)
-    dynrel = (ElfRel<E> *)(ctx.buf + ctx.reldyn->shdr.sh_offset +
-                           file.reldyn_offset + this->reldyn_offset);
-
   auto get_tls_trampoline_addr = [&, i = 0](u64 addr) mutable {
     for (; i < output_section->thunks.size(); i++) {
       i64 disp = output_section->shdr.sh_addr + output_section->thunks[i]->offset -
@@ -298,8 +291,6 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
 
     switch (rel.r_type) {
     case R_ARM_ABS32:
-    case R_ARM_TARGET1:
-      apply_dyn_absrel(ctx, sym, rel, loc, S, A, P, &dynrel);
       break;
     case R_ARM_REL32:
       *(ul32 *)loc = S + A - P;
@@ -586,8 +577,6 @@ void InputSection<E>::apply_reloc_nonalloc(Context<E> &ctx, u8 *base) {
 template <>
 void InputSection<E>::scan_relocations(Context<E> &ctx) {
   assert(shdr().sh_flags & SHF_ALLOC);
-
-  this->reldyn_offset = file.num_dynrel * sizeof(ElfRel<E>);
   std::span<const ElfRel<E>> rels = get_rels(ctx);
 
   // Scan relocations
@@ -602,12 +591,6 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
       sym.flags |= NEEDS_GOT | NEEDS_PLT;
 
     switch (rel.r_type) {
-    case R_ARM_ABS32:
-    case R_ARM_MOVT_ABS:
-    case R_ARM_THM_MOVT_ABS:
-    case R_ARM_TARGET1:
-      scan_dyn_absrel(ctx, sym, rel);
-      break;
     case R_ARM_MOVW_ABS_NC:
     case R_ARM_THM_MOVW_ABS_NC:
       scan_absrel(ctx, sym, rel);
@@ -646,6 +629,9 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
     case R_ARM_TLS_LE32:
       check_tlsle(ctx, sym, rel);
       break;
+    case R_ARM_ABS32:
+    case R_ARM_MOVT_ABS:
+    case R_ARM_THM_MOVT_ABS:
     case R_ARM_REL32:
     case R_ARM_BASE_PREL:
     case R_ARM_GOTOFF32:
@@ -710,6 +696,45 @@ u64 get_eflags(Context<E> &ctx) {
   return EF_ARM_EABI_VER5;
 }
 
+void create_arm_exidx_section(Context<E> &ctx) {
+  for (i64 i = 0; i < ctx.chunks.size(); i++) {
+    OutputSection<E> *osec = ctx.chunks[i]->to_osec();
+
+    if (osec && osec->shdr.sh_type == SHT_ARM_EXIDX) {
+      auto *sec = new Arm32ExidxSection(*osec);
+      ctx.extra.exidx = sec;
+      ctx.chunks[i] = sec;
+      ctx.chunk_pool.emplace_back(sec);
+
+      for (InputSection<E> *isec : osec->members)
+        isec->is_alive = false;
+      break;
+    }
+  }
+}
+
+void Arm32ExidxSection::compute_section_size(Context<E> &ctx) {
+  output_section.compute_section_size(ctx);
+  this->shdr.sh_size = output_section.shdr.sh_size;
+}
+
+void Arm32ExidxSection::update_shdr(Context<E> &ctx) {
+  // .ARM.exidx's sh_link should be set to the .text section index.
+  // Runtime doesn't care about it, but the binutils's strip command does.
+  if (Chunk<E> *chunk = find_chunk(ctx, ".text"))
+    this->shdr.sh_link = chunk->shndx;
+}
+
+void Arm32ExidxSection::remove_duplicate_entries(Context<E> &ctx) {
+  this->shdr.sh_size = get_contents(ctx).size();
+}
+
+void Arm32ExidxSection::copy_buf(Context<E> &ctx) {
+  std::vector<u8> contents = get_contents(ctx);
+  assert(this->shdr.sh_size = contents.size());
+  write_vector(ctx.buf + this->shdr.sh_offset, contents);
+}
+
 // ARM executables use an .ARM.exidx section to look up an exception
 // handling record for the current instruction pointer. The table needs
 // to be sorted by their addresses.
@@ -718,13 +743,12 @@ u64 get_eflags(Context<E> &ctx) {
 // I don't know why only ARM uses the different mechanism, but it's
 // likely that it's due to some historical reason.
 //
-// This function sorts .ARM.exidx records.
-void fixup_arm_exidx_section(Context<E> &ctx) {
-  Timer t(ctx, "fixup_arm_exidx_section");
+// This function returns contents of .ARM.exidx.
+std::vector<u8> Arm32ExidxSection::get_contents(Context<E> &ctx) {
+  std::vector<u8> buf(output_section.shdr.sh_size);
 
-  OutputSection<E> *osec = find_section(ctx, SHT_ARM_EXIDX);
-  if (!osec)
-    return;
+  output_section.shdr.sh_addr = this->shdr.sh_addr;
+  output_section.write_to(ctx, buf.data(), nullptr);
 
   // .ARM.exidx records consists of a signed 31-bit relative address
   // and a 32-bit value. The relative address indicates the start
@@ -738,24 +762,24 @@ void fixup_arm_exidx_section(Context<E> &ctx) {
   //
   // CANTUNWIND is value 1. The most significant bit is set in (2) but
   // not in (3). So we can distinguished them just by looking at a value.
-  const u32 EXIDX_CANTUNWIND = 1;
+  const u32 CANTUNWIND = 1;
 
   struct Entry {
     ul32 addr;
     ul32 val;
   };
 
-  if (osec->shdr.sh_size % sizeof(Entry))
+  if (buf.size() % sizeof(Entry))
     Fatal(ctx) << "invalid .ARM.exidx section size";
 
-  Entry *ent = (Entry *)(ctx.buf + osec->shdr.sh_offset);
-  i64 num_entries = osec->shdr.sh_size / sizeof(Entry);
+  Entry *ent = (Entry *)buf.data();
+  i64 num_entries = buf.size() / sizeof(Entry);
 
   // Entry's addresses are relative to themselves. In order to sort
-  // records by addresses, we first translate them so that the addresses
+  // records by address, we first translate them so that the addresses
   // are relative to the beginning of the section.
   auto is_relative = [](u32 val) {
-    return val != EXIDX_CANTUNWIND && !(val & 0x8000'0000);
+    return val != CANTUNWIND && !(val & 0x8000'0000);
   };
 
   tbb::parallel_for((i64)0, num_entries, [&](i64 i) {
@@ -765,9 +789,20 @@ void fixup_arm_exidx_section(Context<E> &ctx) {
       ent[i].val = 0x7fff'ffff & (ent[i].val + offset);
   });
 
-  tbb::parallel_sort(ent, ent + num_entries, [](const Entry &a, const Entry &b) {
+  std::sort(ent, ent + num_entries, [](const Entry &a, const Entry &b) {
     return a.addr < b.addr;
   });
+
+  // Remove duplicate adjacent entries. That is, if two adjacent functions
+  // have the same compact unwind info or are both CANTUNWIND, we can
+  // merge them into a single address range.
+  auto it = std::unique(ent, ent + num_entries,
+                        [](const Entry &a, const Entry &b) {
+    return a.val == b.val;
+  });
+
+  num_entries = it - ent;
+  buf.resize(num_entries * sizeof(Entry));
 
   // Make addresses relative to themselves.
   tbb::parallel_for((i64)0, num_entries, [&](i64 i) {
@@ -777,14 +812,7 @@ void fixup_arm_exidx_section(Context<E> &ctx) {
       ent[i].val = 0x7fff'ffff & (ent[i].val - offset);
   });
 
-  // .ARM.exidx's sh_link should be set to the .text section index.
-  // Runtime doesn't care about it, but the binutils's strip command does.
-  if (ctx.shdr) {
-    if (Chunk<E> *text = find_section(ctx, ".text")) {
-      osec->shdr.sh_link = text->shndx;
-      ctx.shdr->copy_buf(ctx);
-    }
-  }
+  return buf;
 }
 
 } // namespace mold

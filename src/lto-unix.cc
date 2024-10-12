@@ -178,7 +178,7 @@ static PluginStatus add_input_file(const char *path) {
 
   MappedFile *mf = must_open_file(ctx, path);
 
-  ObjectFile<E> *file = ObjectFile<E>::create(ctx, mf, "", false);
+  ObjectFile<E> *file = new ObjectFile<E>(ctx, mf, "", false);
   ctx.obj_pool.emplace_back(file);
   lto_objects<E>.push_back(file);
 
@@ -674,8 +674,8 @@ ObjectFile<E> *read_lto_object(Context<E> &ctx, MappedFile *mf) {
 
 // Entry point
 template <typename E>
-std::vector<ObjectFile<E> *> do_lto(Context<E> &ctx) {
-  Timer t(ctx, "do_lto");
+std::vector<ObjectFile<E> *> run_lto_plugin(Context<E> &ctx) {
+  Timer t(ctx, "run_lto_plugin");
   load_lto_plugin(ctx);
 
   if (!ctx.arg.lto_pass2 && !supports_v3_api(ctx))
@@ -743,7 +743,7 @@ void lto_cleanup(Context<E> &ctx) {
 using E = MOLD_TARGET;
 
 template ObjectFile<E> *read_lto_object(Context<E> &, MappedFile *);
-template std::vector<ObjectFile<E> *> do_lto(Context<E> &);
+template std::vector<ObjectFile<E> *> run_lto_plugin(Context<E> &);
 template void lto_cleanup(Context<E> &);
 
 } // namespace mold

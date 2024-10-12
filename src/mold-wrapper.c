@@ -9,7 +9,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#if !defined(__OpenBSD__) && !defined(__FreeBSD__)
+#if __has_include(<alloca.h>)
 # include <alloca.h>
 #endif
 

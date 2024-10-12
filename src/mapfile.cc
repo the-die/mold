@@ -14,15 +14,6 @@ using Map =
   tbb::concurrent_hash_map<InputSection<E> *, std::vector<Symbol<E> *>>;
 
 template <typename E>
-static std::unique_ptr<std::ofstream> open_output_file(Context<E> &ctx) {
-  std::unique_ptr<std::ofstream> file(new std::ofstream);
-  file->open(ctx.arg.Map.c_str());
-  if (!file->is_open())
-    Fatal(ctx) << "cannot open " << ctx.arg.Map << ": " << errno_string();
-  return file;
-}
-
-template <typename E>
 static Map<E> get_map(Context<E> &ctx) {
   Map<E> map;
 
@@ -57,11 +48,13 @@ void print_map(Context<E> &ctx) {
   Timer t(ctx, "print_map");
 
   std::ostream *out = &std::cout;
-  std::unique_ptr<std::ofstream> file;
+  std::ofstream file;
 
   if (!ctx.arg.Map.empty()) {
-    file = open_output_file(ctx);
-    out = file.get();
+    file.open(ctx.arg.Map);
+    if (!file.is_open())
+      Fatal(ctx) << "cannot open " << ctx.arg.Map << ": " << errno_string();
+    out = &file;
   }
 
   // Construct a section-to-symbol map.
@@ -70,28 +63,32 @@ void print_map(Context<E> &ctx) {
   // Print a mapfile.
   *out << "               VMA       Size Align Out     In      Symbol\n";
 
-  for (Chunk<E> *osec : ctx.chunks) {
+  for (Chunk<E> *chunk : ctx.chunks) {
     *out << std::showbase
-         << std::setw(18) << std::hex << (u64)osec->shdr.sh_addr << std::dec
-         << std::setw(11) << (u64)osec->shdr.sh_size
-         << std::setw(6) << (u64)osec->shdr.sh_addralign
-         << " " << osec->name << "\n";
+         << std::setw(18) << std::hex << (u64)chunk->shdr.sh_addr << std::dec
+         << std::setw(11) << (u64)chunk->shdr.sh_size
+         << std::setw(6) << (u64)chunk->shdr.sh_addralign
+         << " " << chunk->name << "\n";
 
-    if (!osec->to_osec())
+    OutputSection<E> *osec = chunk->to_osec();
+    if (!osec)
       continue;
 
-    std::span<InputSection<E> *> members = ((OutputSection<E> *)osec)->members;
+    std::span<InputSection<E> *> members = osec->members;
     std::vector<std::string> bufs(members.size());
 
     tbb::parallel_for((i64)0, (i64)members.size(), [&](i64 i) {
       InputSection<E> *mem = members[i];
       std::ostringstream ss;
-      u64 addr = osec->shdr.sh_addr + mem->offset;
+
+      u64 addr = 0;
+      if (osec->shdr.sh_flags & SHF_ALLOC)
+        addr = osec->shdr.sh_addr + mem->offset;
 
       ss << std::showbase
          << std::setw(18) << std::hex << addr << std::dec
          << std::setw(11) << (u64)mem->sh_size
-         << std::setw(6) << (1 << (u64)mem->p2align)
+         << std::setw(6) << (1 << mem->p2align)
          << "         " << *mem << "\n";
 
       typename Map<E>::const_accessor acc;

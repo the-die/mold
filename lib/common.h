@@ -64,8 +64,6 @@ namespace mold {
 using namespace std::literals::string_literals;
 using namespace std::literals::string_view_literals;
 
-template <typename Context> class OutputFile;
-
 inline char *output_tmpfile;
 
 inline u8 *output_buffer_start = nullptr;
@@ -74,13 +72,12 @@ inline u8 *output_buffer_end = nullptr;
 extern std::string mold_git_hash;
 
 std::string errno_string();
-std::string get_self_path();
 void cleanup();
 void install_signal_handler();
 
 // hash_combine
 //   https://github.com/boostorg/container_hash/blob/6d214eb776456bf17fbee20780a034a23438084f/doc/hash/notes.adoc
-static u64 combine_hash(u64 a, u64 b) {
+inline u64 combine_hash(u64 a, u64 b) {
   return a ^ (b + 0x9e3779b9 + (a << 6) + (a >> 2));
 }
 
@@ -471,10 +468,9 @@ inline i64 write_string(void *buf, std::string_view str) {
 }
 
 template <typename T>
-inline i64 write_vector(void *buf, const std::vector<T> &vec) {
-  i64 sz = vec.size() * sizeof(T);
-  memcpy(buf, vec.data(), sz);
-  return sz;
+inline void write_vector(void *buf, const std::vector<T> &vec) {
+  if (!vec.empty())
+    memcpy(buf, vec.data(), vec.size() * sizeof(T));
 }
 
 inline void encode_uleb(std::vector<u8> &vec, u64 val) {
@@ -552,16 +548,6 @@ inline void overwrite_uleb(u8 *loc, u64 val) {
     val >>= 7;
   }
   *loc = val & 0b0111'1111;
-}
-
-// put the `str` into the `ctx` string pool
-template <typename Context>
-std::string_view save_string(Context &ctx, const std::string &str) {
-  u8 *buf = new u8[str.size() + 1];
-  memcpy(buf, str.data(), str.size());
-  buf[str.size()] = '\0';
-  ctx.string_pool.push_back(std::unique_ptr<u8[]>(buf));
-  return {(char *)buf, str.size()};
 }
 
 static inline void pause() {
@@ -749,82 +735,6 @@ public:
 void get_random_bytes(u8 *buf, i64 size);
 
 //
-// output-file.h
-//
-
-template <typename Context>
-class OutputFile {
-public:
-  static std::unique_ptr<OutputFile<Context>>
-  open(Context &ctx, std::string path, i64 filesize, int perm);
-
-  virtual void close(Context &ctx) = 0;
-  virtual ~OutputFile() = default;
-
-  u8 *buf = nullptr;
-  std::vector<u8> buf2;
-  std::string path;
-  int fd = -1;
-  i64 filesize = 0;
-  bool is_mmapped = false;
-  bool is_unmapped = false;
-
-protected:
-  OutputFile(std::string path, i64 filesize, bool is_mmapped)
-    : path(path), filesize(filesize), is_mmapped(is_mmapped) {}
-};
-
-template <typename Context>
-class MallocOutputFile : public OutputFile<Context> {
-public:
-  MallocOutputFile(Context &ctx, std::string path, i64 filesize, int perm)
-    : OutputFile<Context>(path, filesize, false), ptr(new u8[filesize]),
-      perm(perm) {
-    this->buf = ptr.get();
-  }
-
-  void close(Context &ctx) override {
-    Timer t(ctx, "close_file");
-    FILE *fp;
-
-    if (this->path == "-") {
-      fp = stdout;
-    } else {
-#ifdef _WIN32
-      int pmode = (perm & 0200) ? (_S_IREAD | _S_IWRITE) : _S_IREAD;
-      i64 fd = _open(this->path.c_str(), _O_RDWR | _O_CREAT | _O_BINARY, pmode);
-#else
-      i64 fd = ::open(this->path.c_str(), O_RDWR | O_CREAT, perm);
-#endif
-      if (fd == -1)
-        Fatal(ctx) << "cannot open " << this->path << ": " << errno_string();
-#ifdef _WIN32
-      fp = _fdopen(fd, "wb");
-#else
-      fp = fdopen(fd, "w");
-#endif
-    }
-
-    fwrite(this->buf, this->filesize, 1, fp);
-    if (!this->buf2.empty())
-      fwrite(this->buf2.data(), this->buf2.size(), 1, fp);
-    fclose(fp);
-  }
-
-private:
-  std::unique_ptr<u8[]> ptr;
-  int perm;
-};
-
-template <typename Context>
-class LockingOutputFile : public OutputFile<Context> {
-public:
-  LockingOutputFile(Context &ctx, std::string path, int perm);
-  void resize(Context &ctx, i64 filesize);
-  void close(Context &ctx) override;
-};
-
-//
 // hyperloglog.cc
 //
 
@@ -909,17 +819,19 @@ private:
 
 // std::filesystem::path
 //   https://en.cppreference.com/w/cpp/filesystem/path
-//
-// std::filesystem::path::format
-//   https://en.cppreference.com/w/cpp/filesystem/path/format
-//   https://www.boost.org/doc/libs/1_85_0/libs/filesystem/doc/tutorial.html#Class-path-formats
-std::filesystem::path filepath(const auto &path) {
-  return {path, std::filesystem::path::format::generic_format};
+inline std::filesystem::path path_dirname(std::string_view path) {
+  return std::filesystem::path(path).parent_path();
 }
 
-std::string get_realpath(std::string_view path);
-std::string path_clean(std::string_view path);
-std::filesystem::path to_abs_path(std::filesystem::path path);
+inline std::string path_filename(std::string_view path) {
+  return std::filesystem::path(path).filename().string();
+}
+
+inline std::string path_clean(std::string_view path) {
+  return std::filesystem::path(path).lexically_normal().string();
+}
+
+std::string get_self_path();
 
 //
 // demangle.cc

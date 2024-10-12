@@ -266,11 +266,6 @@ template <>
 void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
   std::span<const ElfRel<E>> rels = get_rels(ctx);
 
-  ElfRel<E> *dynrel = nullptr;
-  if (ctx.reldyn)
-    dynrel = (ElfRel<E> *)(ctx.buf + ctx.reldyn->shdr.sh_offset +
-                           file.reldyn_offset + this->reldyn_offset);
-
   auto get_r_delta = [&](i64 idx) {
     return extra.r_deltas.empty() ? 0 : extra.r_deltas[idx];
   };
@@ -329,12 +324,6 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
     case R_LARCH_32:
       if constexpr (E::is_64)
         *(ul32 *)loc = S + A;
-      else
-        apply_dyn_absrel(ctx, sym, rel, loc, S, A, P, &dynrel);
-      break;
-    case R_LARCH_64:
-      assert(E::is_64);
-      apply_dyn_absrel(ctx, sym, rel, loc, S, A, P, &dynrel);
       break;
     case R_LARCH_B16:
       check_branch(S + A - P, -(1 << 17), 1 << 17);
@@ -533,7 +522,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
           *(ul32 *)loc = 0x5000'0000; // B
         else
           *(ul32 *)loc = 0x5400'0000; // BL
-        write_k16(loc, (S + A - P) >> 2);
+        write_d10k16(loc, (S + A - P) >> 2);
       }
       break;
     case R_LARCH_ADD_ULEB128:
@@ -548,7 +537,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       //
       //   pcalau12i $a0, 0
       //       R_LARCH_TLS_DESC_PC_HI20    foo
-      //   addi.d    $a0, $a0, 0
+      //   addi.[dw] $a0, $a0, 0
       //       R_LARCH_TLS_DESC_PC_LO12    foo
       //   ld.d      $ra, $a0, 0
       //       R_LARCH_TLS_DESC_LD         foo
@@ -563,33 +552,63 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
       //   lu12i.w   $a0, foo@TPOFF
       //   addi.w    $a0, $a0, foo@TPOFF
       //
-      // or to the following if the TP-relative address is known at
-      // process startup time.
+      // or to the following if the TP offset is small enough.
+      //
+      //   <nop>
+      //   <nop>
+      //   <nop>
+      //   ori       $a0, $zero, foo@TPOFF
+      //
+      // If the TP-relative address is known at process startup time, we
+      // may relax the instructions to the following.
       //
       //   <nop>
       //   <nop>
       //   pcalau12i $a0, foo@GOTTP
       //   ld.[dw]   $a0, $a0, foo@GOTTP
       //
+      // If we don't know anything about the symbol, we can still relax
+      // the first two instructions to a single pcaddi as shown below.
+      //
+      //   <nop>
+      //   pcaddi    $a0, foo@GOTDESC
+      //   ld.d      $ra, $a0, 0
+      //   jirl      $ra, $ra, 0
+      //
       // Note that if section-shrinking relaxation is enabled, nop may be
       // completely deleted.
       if (removed_bytes == 0) {
-        if (sym.has_tlsdesc(ctx))
-          write_j20(loc, hi20(sym.get_tlsdesc_addr(ctx) + A, P));
-        else
+        if (sym.has_tlsdesc(ctx)) {
+          i64 dist = sym.get_tlsdesc_addr(ctx) + A - P;
+          if (ctx.arg.relax && -(1 << 21) <= dist && dist < (1 << 21)) {
+            *(ul32 *)loc = 0x0340'0000; // nop
+          } else {
+            write_j20(loc, hi20(sym.get_tlsdesc_addr(ctx) + A, P));
+          }
+        } else {
           *(ul32 *)loc = 0x0340'0000; // nop
+        }
       }
       break;
     case R_LARCH_TLS_DESC_PC_LO12:
       if (removed_bytes == 0) {
-        if (sym.has_tlsdesc(ctx))
-          write_k12(loc, sym.get_tlsdesc_addr(ctx) + A);
-        else
+        if (sym.has_tlsdesc(ctx)) {
+          i64 dist = sym.get_tlsdesc_addr(ctx) + A - P;
+          if (ctx.arg.relax && -(1 << 21) <= dist && dist < (1 << 21)) {
+            // If we can directly materialize the PC-relative address
+            // with pcaddi, do that.
+            *(ul32 *)loc = 0x1800'0000 | get_rd(*(ul32 *)loc); // pcaddi
+            write_j20(loc, dist >> 2);
+          } else {
+            write_k12(loc, sym.get_tlsdesc_addr(ctx) + A);
+          }
+        } else {
           *(ul32 *)loc = 0x0340'0000; // nop
+        }
       }
       break;
     case R_LARCH_TLS_DESC_LD:
-      if (sym.has_tlsdesc(ctx)) {
+      if (sym.has_tlsdesc(ctx) || removed_bytes == 4) {
         // Do nothing
       } else if (sym.has_gottp(ctx)) {
         *(ul32 *)loc = 0x1a00'0004; // pcalau12i $a0, 0
@@ -609,8 +628,12 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
           *(ul32 *)loc = 0x2880'0084; // ld.w $a0, $a0, 0
         write_k12(loc, sym.get_gottp_addr(ctx) + A);
       } else {
-        *(ul32 *)loc = 0x0280'0084;   // addi.w $a0, $a0, 0
-        write_k12(loc, S + A - ctx.tp_addr);
+        i64 val = S + A - ctx.tp_addr;
+        if (val < 0x1000)
+          *(ul32 *)loc = 0x0380'0004; // ori    $a0, $zero, 0
+        else
+          *(ul32 *)loc = 0x0280'0084; // addi.w $a0, $a0, 0
+        write_k12(loc, val);
       }
       break;
     case R_LARCH_TLS_LE_HI20_R:
@@ -627,6 +650,7 @@ void InputSection<E>::apply_reloc_alloc(Context<E> &ctx, u8 *base) {
         set_rj(loc, 2);
       break;
     }
+    case R_LARCH_64:
     case R_LARCH_TLS_LE_ADD_R:
       break;
     default:
@@ -728,8 +752,6 @@ void InputSection<E>::apply_reloc_nonalloc(Context<E> &ctx, u8 *base) {
 template <>
 void InputSection<E>::scan_relocations(Context<E> &ctx) {
   assert(shdr().sh_flags & SHF_ALLOC);
-
-  this->reldyn_offset = file.num_dynrel * sizeof(ElfRel<E>);
   std::span<const ElfRel<E>> rels = get_rels(ctx);
 
   // Scan relocations
@@ -753,12 +775,6 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
     case R_LARCH_32:
       if constexpr (E::is_64)
         scan_absrel(ctx, sym, rel);
-      else
-        scan_dyn_absrel(ctx, sym, rel);
-      break;
-    case R_LARCH_64:
-      assert(E::is_64);
-      scan_dyn_absrel(ctx, sym, rel);
       break;
     case R_LARCH_B26:
     case R_LARCH_PCALA_HI20:
@@ -795,6 +811,7 @@ void InputSection<E>::scan_relocations(Context<E> &ctx) {
     case R_LARCH_TLS_DESC_CALL:
       scan_tlsdesc(ctx, sym);
       break;
+    case R_LARCH_64:
     case R_LARCH_B16:
     case R_LARCH_B21:
     case R_LARCH_ABS_HI20:
@@ -966,8 +983,22 @@ void shrink_section(Context<E> &ctx, InputSection<E> &isec, bool use_rvc) {
       }
       break;
     case R_LARCH_TLS_DESC_PC_HI20:
+      if (sym.has_tlsdesc(ctx)) {
+        u64 P = isec.get_addr() + r.r_offset;
+        i64 dist = sym.get_tlsdesc_addr(ctx) + r.r_addend - P;
+        if (-(1 << 21) <= dist && dist < (1 << 21))
+          delta += 4;
+      } else {
+        delta += 4;
+      }
+      break;
     case R_LARCH_TLS_DESC_PC_LO12:
       if (!sym.has_tlsdesc(ctx))
+        delta += 4;
+      break;
+    case R_LARCH_TLS_DESC_LD:
+      if (!sym.has_tlsdesc(ctx) && !sym.has_gottp(ctx) &&
+          sym.get_addr(ctx) + r.r_addend - ctx.tp_addr < 0x1000)
         delta += 4;
       break;
     }

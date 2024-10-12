@@ -13,39 +13,6 @@
 
 namespace mold {
 
-// std::filesystem::read_symlink
-//   https://en.cppreference.com/w/cpp/filesystem/read_symlink
-// std::filesystem::path::append, std::filesystem::path::operator/=
-//   https://en.cppreference.com/w/cpp/filesystem/path/append
-std::string get_realpath(std::string_view path) {
-  std::error_code ec;
-  std::filesystem::path link = std::filesystem::read_symlink(path, ec);
-  if (ec)
-    return std::string(path);
-  return (filepath(path) / ".." / link).lexically_normal().string();
-}
-
-// std::filesystem::path::lexically_normal
-//   https://en.cppreference.com/w/cpp/filesystem/path/lexically_normal
-//
-//
-// Removes redundant '/..' or '/.' from a given path.
-// The transformation is done purely by lexical processing.
-// This function does not access file system.
-std::string path_clean(std::string_view path) {
-  return filepath(path).lexically_normal().string();
-}
-
-// std::filesystem::current_path
-//   https://en.cppreference.com/w/cpp/filesystem/current_path
-// std::filesystem::absolute
-//   https://en.cppreference.com/w/cpp/filesystem/absolute
-std::filesystem::path to_abs_path(std::filesystem::path path) {
-  if (path.is_absolute())
-    return path.lexically_normal();
-  return (std::filesystem::current_path() / path).lexically_normal();
-}
-
 // Returns the path of the mold executable itself
 std::string get_self_path() {
 #if __APPLE__ || _WIN32

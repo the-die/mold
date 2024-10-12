@@ -26,7 +26,6 @@
 #pragma once
 
 #include "common.h"
-#include "filetype.h"
 
 namespace mold {
 
@@ -88,7 +87,7 @@ struct ArHdr {
   }
 };
 
-template <typename Context, typename MappedFile>
+template <typename Context>
 std::vector<MappedFile *>
 read_thin_archive_members(Context &ctx, MappedFile *mf) {
   u8 *begin = mf->data;
@@ -128,7 +127,7 @@ read_thin_archive_members(Context &ctx, MappedFile *mf) {
       continue;
 
     std::string path = name.starts_with('/') ?
-      name : (filepath(mf->name).parent_path() / name).string();
+      name : (path_dirname(mf->name) / name).string();
     vec.push_back(must_open_file(ctx, path));
     vec.back()->thin_parent = mf;
     data = body;
@@ -136,7 +135,7 @@ read_thin_archive_members(Context &ctx, MappedFile *mf) {
   return vec;
 }
 
-template <typename Context, typename MappedFile>
+template <typename Context>
 std::vector<MappedFile *> read_fat_archive_members(Context &ctx, MappedFile *mf) {
   u8 *begin = mf->data;
   u8 *data = begin + 8; // !<arch>\n
@@ -177,16 +176,13 @@ std::vector<MappedFile *> read_fat_archive_members(Context &ctx, MappedFile *mf)
 }
 
 // read the contents of an archive file
-template <typename Context, typename MappedFile>
+template <typename Context>
 std::vector<MappedFile *> read_archive_members(Context &ctx, MappedFile *mf) {
-  switch (get_file_type(ctx, mf)) {
-  case FileType::AR:
+  std::string_view str = mf->get_contents();
+  if (str.starts_with("!<arch>\n"))
     return read_fat_archive_members(ctx, mf);
-  case FileType::THIN_AR:
-    return read_thin_archive_members(ctx, mf);
-  default:
-    unreachable();
-  }
+  assert(str.starts_with("!<thin>\n"));
+  return read_thin_archive_members(ctx, mf);
 }
 
 } // namespace mold
